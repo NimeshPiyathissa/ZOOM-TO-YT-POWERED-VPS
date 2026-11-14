@@ -41,7 +41,7 @@ First public release.
 - Found on the release test server: on dual-stack (IPv4 + IPv6) servers the IP-only self-signed certificate was
   issued for the IPv6 address and the DNS check warned falsely; public-IP detection is now IPv4-only.
 - `zoom.service` failed at boot when the active source was a web page; it now exits cleanly.
-- `doctor.sh` and `uninstall.sh` accept `--no-color`; the installer's DNS menu no longer repeats its explanation after
+- all tools accept `--no-color`; the installer's DNS menu no longer repeats its explanation after
   a wait timeout; `set-domain.sh --check` says "Checking", and the provider-firewall hint names Linode.
 - `doctor.sh`: a stray line continuation hid the "firewall blocks HTTPS" result.
 
