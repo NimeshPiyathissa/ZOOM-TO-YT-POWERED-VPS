@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/OWNER/REPO/security/advisories/new
+    url: https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/security/advisories/new
     about: Please report security problems privately.
   - name: Documentation
-    url: https://github.com/OWNER/REPO/tree/main/docs
+    url: https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/tree/main/docs
     about: Installation, usage and troubleshooting guides.

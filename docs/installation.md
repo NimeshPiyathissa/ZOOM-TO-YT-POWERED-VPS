@@ -85,7 +85,7 @@ You can also skip the key during installation and paste it into the dashboard la
 On the server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/main/install.sh -o install.sh
 sudo bash install.sh
 ```
 

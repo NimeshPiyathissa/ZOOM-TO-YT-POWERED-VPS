@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <a href="https://github.com/OWNER/REPO/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Ubuntu 24.04 LTS" src="https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="Release" src="https://img.shields.io/badge/release-v1.0.0-success">
@@ -84,12 +84,12 @@ measure before raising it - see [Performance](docs/faq.md#how-much-cpu-does-it-n
 On a fresh Ubuntu 24.04 server, as a user with sudo:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/main/install.sh -o install.sh
 sudo bash install.sh
 ```
 
 The installer downloads the project with `git` into `/opt/zoom-stream` and continues from there. You can also clone
-first: `sudo git clone https://github.com/OWNER/REPO.git /opt/zoom-stream && sudo /opt/zoom-stream/install.sh`.
+first: `sudo git clone https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS.git /opt/zoom-stream && sudo /opt/zoom-stream/install.sh`.
 
 It checks the server, asks a few questions, shows a summary to confirm, then installs everything from official sources
 (about 10-20 minutes). If anything fails it tells you which step, why, and how to continue - running it again resumes
