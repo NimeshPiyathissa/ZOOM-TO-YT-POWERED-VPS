@@ -52,6 +52,40 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# >>> bootstrap-fn (kept self-contained: it runs before the project files exist)
+# zs_bootstrap_clone DIR URL REF INSTALLED_MARKER - make DIR a clone of URL at REF.
+#   * no DIR yet (or an empty one)      -> git clone
+#   * DIR is a clone, install finished  -> left exactly as it is (moving versions is update.sh's job)
+#   * DIR is a clone, install unfinished -> fetch and move to REF, so a re-run after a failed download or with a
+#                                           different --ref really installs REF; local edits are never overwritten
+#   * DIR exists but is not a clone     -> refuse with an explanation (nothing is deleted)
+zs_bootstrap_clone() {
+  local dir="$1" url="$2" ref="$3" marker="$4"
+  if [[ -d "$dir/.git" ]]; then
+    if [[ -f "$marker" ]]; then return 0; fi
+    git -C "$dir" fetch --tags --prune origin || { echo "Could not update ${dir} from its git remote (network?)." >&2; return 1; }
+    if [[ -n "$(git -C "$dir" status --porcelain --untracked-files=no)" ]]; then
+      echo "Note: files in ${dir} were edited locally - keeping them and installing that copy as it is." >&2
+      return 0
+    fi
+    if git -C "$dir" rev-parse -q --verify "refs/remotes/origin/${ref}^{commit}" >/dev/null; then
+      git -C "$dir" -c advice.detachedHead=false checkout -q -B "$ref" "origin/${ref}"
+    elif git -C "$dir" rev-parse -q --verify "${ref}^{commit}" >/dev/null; then
+      git -C "$dir" -c advice.detachedHead=false checkout -q "$ref"
+    else
+      echo "Version '${ref}' does not exist in ${url}." >&2; return 1
+    fi
+    return 0
+  fi
+  if [[ -e "$dir" ]] && [[ -n "$(ls -A "$dir" 2>/dev/null)" ]]; then
+    echo "${dir} already exists but is not a git clone of this project, so nothing was changed." >&2
+    echo "Move it away (sudo mv ${dir} ${dir}.old) and run the installer again." >&2
+    return 1
+  fi
+  git clone --branch "$ref" "$url" "$dir"
+}
+# <<< bootstrap-fn
+
 if [[ $EUID -ne 0 ]]; then
   echo "Please run the installer as root:  sudo bash $0" >&2
   exit 1
@@ -79,11 +113,7 @@ else
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 update -y >/dev/null
     DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 install -y git ca-certificates >/dev/null
   fi
-  if [[ -d "$ZS_CLONE_DIR/.git" ]]; then
-    git -C "$ZS_CLONE_DIR" fetch --tags origin
-  else
-    git clone --branch "$REPO_REF" "$REPO_URL" "$ZS_CLONE_DIR"
-  fi
+  zs_bootstrap_clone "$ZS_CLONE_DIR" "$REPO_URL" "$REPO_REF" "/etc/zoom-stream/installer/installed" || exit 1
   if [[ -r /dev/tty ]] && { true </dev/tty; } 2>/dev/null; then
     exec bash "$ZS_CLONE_DIR/install.sh" "${ORIG_ARGS[@]}" </dev/tty
   fi
