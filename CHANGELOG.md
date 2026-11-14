@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-11-XX
+## [1.0.0] - 2026-11-14
 
 First public release.
 
@@ -38,6 +38,11 @@ First public release.
   are now replaced (with a backup), hand-edited ones still need explicit confirmation.
 - Installer: apt calls wait for the package lock instead of failing while automatic updates run.
 - Tests no longer depend on the machine's DNS resolver for `example.com`.
+- Found on the release test server: on dual-stack (IPv4 + IPv6) servers the IP-only self-signed certificate was
+  issued for the IPv6 address and the DNS check warned falsely; public-IP detection is now IPv4-only.
+- `zoom.service` failed at boot when the active source was a web page; it now exits cleanly.
+- `doctor.sh` and `uninstall.sh` accept `--no-color`; the installer's DNS menu no longer repeats its explanation after
+  a wait timeout; `set-domain.sh --check` says "Checking", and the provider-firewall hint names Linode.
 - `doctor.sh`: a stray line continuation hid the "firewall blocks HTTPS" result.
 
 ### Changed
