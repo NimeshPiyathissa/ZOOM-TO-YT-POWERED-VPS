@@ -72,7 +72,7 @@ mkdir -p "${APP_DIR}" "${DATA_DIR}" "${CERT_DIR}"
 cp -r "${SRC_DIR}/app" "${APP_DIR}/"
 cp -r "${SRC_DIR}/static" "${APP_DIR}/"
 cp -r "${SRC_DIR}/templates" "${APP_DIR}/"
-cp "${SRC_DIR}/requirements.txt" "${APP_DIR}/"
+cp "${SRC_DIR}/requirements.txt" "${SRC_DIR}/constraints.txt" "${APP_DIR}/"
 chown -R "${DASH_USER}:${DASH_USER}" "${DASH_HOME}"
 chmod 700 "${DATA_DIR}" "${CERT_DIR}"
 
