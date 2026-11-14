@@ -45,7 +45,9 @@ zs_retry 3 5 git -C "$SRC" fetch --tags --prune origin >>"$ZS_LOG_FILE" 2>&1 || 
 
 CURRENT="$(git -C "$SRC" rev-parse HEAD)"
 CURRENT_NAME="$(git -C "$SRC" describe --tags --always)"
+REF_CHOSEN=0
 if [[ -z "$REF" ]]; then
+  REF_CHOSEN=1
   REF="$(git -C "$SRC" tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
   if [[ -z "$REF" ]]; then
     branch="$(git -C "$SRC" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || echo origin/main)"
@@ -57,6 +59,13 @@ TARGET="$(git -C "$SRC" rev-parse -q --verify "${TARGET_REF}^{commit}")" || zs_d
 zs_info "Installed: ${CURRENT_NAME}"
 zs_info "Available: ${REF} ($(git -C "$SRC" describe --tags --always "$TARGET"))"
 if [[ "$CURRENT" == "$TARGET" ]]; then zs_ok "Already up to date."; exit 0; fi
+# The newest release was picked automatically: never move BACKWARDS to it. An install made from the main branch can
+# already contain that release plus later fixes; "updating" to the tag would silently remove them.
+if (( REF_CHOSEN )) && zs_git_is_ancestor "$SRC" "$TARGET" "$CURRENT"; then
+  zs_ok "Already up to date: the installed version (${CURRENT_NAME}) already includes ${REF}."
+  zs_hint "To move to an older version on purpose: sudo bash $SRC/update.sh --ref <tag>"
+  exit 0
+fi
 if (( CHECK )); then
   echo; git -C "$SRC" log --oneline "${CURRENT}..${TARGET}" | head -n 20 | sed 's/^/    /'
   exit 0

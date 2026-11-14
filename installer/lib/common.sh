@@ -5,6 +5,13 @@
 # Secrets rule: nothing in here ever prints or logs an answer whose key is listed in ZS_SECRET_KEYS.
 # shellcheck disable=SC2034  # many of these paths are used by the scripts that source this file
 
+# ------------------------------------------------------------------ locale
+
+# Every tool these scripts read output from (ufw, apt, dpkg, systemctl, timedatectl ...) answers in plain English,
+# whatever language the server is set to: "Status: active" and "Could not get lock" are matched as text.
+# C.UTF-8 is built into Ubuntu's C library, so it always exists.
+export LC_ALL=C.UTF-8 LANG=C.UTF-8 LANGUAGE=
+
 # ------------------------------------------------------------------ locations
 
 ZS_ETC_DIR="${ZS_ETC_DIR:-/etc/zoom-stream}"
@@ -224,6 +231,9 @@ zs_encoder_running() {
   state="$(zs_user_systemctl is-active ffmpeg-stream.service 2>/dev/null || true)"
   case "$state" in inactive|failed|"") return 1 ;; *) return 0 ;; esac
 }
+
+# zs_git_is_ancestor REPO OLDER NEWER - true when commit OLDER is NEWER itself or part of its history.
+zs_git_is_ancestor() { git -C "$1" merge-base --is-ancestor "$2" "$3" 2>/dev/null; }
 
 # ------------------------------------------------------------------ failure explanations
 
