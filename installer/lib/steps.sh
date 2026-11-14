@@ -31,9 +31,11 @@ zs_step_packages() {
     dbus-user-session dbus-x11 \
     fonts-liberation "$asound" libnss3 libxss1 "$gtk" \
     python3 python3-venv python3-pip websockify openssl \
-    wget curl ca-certificates gnupg ufw jq logrotate git sudo iproute2 psmisc bind9-dnsutils caddy
+    wget curl ca-certificates gnupg ufw jq logrotate git sudo iproute2 psmisc procps rsync util-linux \
+    bind9-dnsutils caddy
   local c missing=()
-  for c in Xvfb openbox x11vnc xdotool wmctrl ffmpeg ffprobe pactl python3 websockify jq ufw git caddy curl; do
+  for c in Xvfb openbox x11vnc xdotool wmctrl xprop xset unclutter ffmpeg ffprobe pactl parec python3 websockify jq ufw \
+           git caddy curl rsync flock dig fc-cache; do
     command -v "$c" >/dev/null || missing+=("$c")
   done
   if (( ${#missing[@]} )); then echo "missing after install: ${missing[*]}"; return 1; fi
@@ -175,9 +177,28 @@ zs_step_timezone() {
 
 # ------------------------------------------------------------------ 8. firewall
 
+# zs_ssh_ports - every TCP port the SSH server accepts logins on, one per line (22 when nothing can be detected).
+# Sources: sshd's effective configuration, the listening sockets owned by sshd (Ubuntu 24.04 socket-activates it, so
+# a port set in ssh.socket shows up only there), and the port of the SSH session running the installer.
+zs_ssh_ports() {
+  local found
+  found="$({
+    sshd -T 2>/dev/null | awk 'tolower($1) == "port" {print $2}' || true
+    ss -Hltnp 2>/dev/null | awk '/"sshd"/ {n = split($4, a, ":"); print a[n]}' || true
+    if [[ -n "${SSH_CONNECTION:-}" ]]; then awk '{print $4}' <<<"$SSH_CONNECTION"; fi
+  } | awk '/^[0-9]+$/ && $1 >= 1 && $1 <= 65535' | sort -un)" || true
+  if [[ -n "$found" ]]; then echo "$found"; else echo 22; fi
+}
+
 zs_step_firewall() {
   if [[ "$(zs_get FIREWALL)" != "yes" ]]; then echo "firewall: skipped by choice"; return 0; fi
-  ufw allow OpenSSH
+  # SSH first, and on the port(s) it really uses: with only the default "OpenSSH" (22) rule, turning the firewall on
+  # would lock the operator out of a server whose SSH runs on another port.
+  local port
+  while IFS= read -r port; do
+    if [[ "$port" == "22" ]]; then ufw allow OpenSSH
+    else ufw allow "${port}/tcp" comment 'SSH'; echo "firewall: SSH is on port ${port} - allowed"; fi
+  done < <(zs_ssh_ports)
   ufw allow 443/tcp
   if [[ "$(zs_get SSL_MODE)" == "letsencrypt" ]]; then ufw allow 80/tcp; fi
   ufw --force enable
