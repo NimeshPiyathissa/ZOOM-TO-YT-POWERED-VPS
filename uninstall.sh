@@ -5,6 +5,7 @@
 #   sudo ./uninstall.sh --yes      remove the services and app code, KEEP all data (no questions)
 #   sudo ./uninstall.sh --yes --purge-data   also delete the data (database, encrypted secrets, recordings,
 #                                            Chrome sign-ins, backups) - irreversible
+#   --no-color                     plain output
 #
 # Always removed: the services, the dashboard and pipeline code, sudoers/logrotate/systemd files, the HTTPS config.
 # Data is kept unless you confirm deleting it (a final backup is offered first). Zoom, Chrome, Caddy and other
@@ -19,6 +20,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --yes|-y) YES=1 ;;
     --purge-data) PURGE=1 ;;
+    --no-color) export NO_COLOR=1; zs_init_colors ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) zs_die "Unknown option: $1 (see --help)" ;;
   esac

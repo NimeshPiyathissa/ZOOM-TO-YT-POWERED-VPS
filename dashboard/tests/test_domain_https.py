@@ -536,3 +536,15 @@ def test_setup_https_dns_check_compares_ipv4_only(tmp_path, answer, expected):
     r = subprocess.run([BASH, "-c", func + '\nprintf "IP=[%s]" "$(_public_ipv4)"'], capture_output=True, text=True,
                        timeout=30, env=env, stdin=subprocess.DEVNULL)
     assert f"IP=[{expected}]" in r.stdout, r.stdout + r.stderr
+
+
+@needs_bash
+def test_uninstall_accepts_no_color_like_the_other_tools():
+    # Found on the v1.0.0 test server (reset between run A and run B): `uninstall.sh --no-color` was rejected.
+    r = subprocess.run([BASH, _posix(REPO / "uninstall.sh"), "--no-color", "--help"], capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "--no-color" in r.stdout and "Unknown option" not in r.stdout + r.stderr
+    r = subprocess.run([BASH, _posix(REPO / "uninstall.sh"), "--bogus"], capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    assert r.returncode != 0 and "Unknown option: --bogus" in r.stdout + r.stderr
