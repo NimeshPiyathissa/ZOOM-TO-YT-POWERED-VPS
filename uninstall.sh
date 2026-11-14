@@ -10,7 +10,11 @@
 # Always removed: the services, the dashboard and pipeline code, sudoers/logrotate/systemd files, the HTTPS config.
 # Data is kept unless you confirm deleting it (a final backup is offered first). Zoom, Chrome, Caddy and other
 # system packages are only removed if you say so. The git clone itself is left in place.
-set -euo pipefail
+set -Eeuo pipefail
+# Any command that fails unexpectedly is named (line + exit code) instead of ending the script silently.
+# shellcheck disable=SC2317  # called from the ERR trap
+on_error() { echo "uninstall.sh: unexpected error at line ${2} (exit code ${1})" >&2; exit "$1"; }
+trap 'on_error $? $LINENO' ERR
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=installer/lib/common.sh
 source "$SRC/installer/lib/common.sh"
@@ -84,11 +88,33 @@ rm -rf "$ZS_DASH_HOME/app" "$ZS_DASH_HOME/venv" "$ZS_APP_DIR/scripts" "$ZS_APP_D
 rm -f "$ZS_INSTALLED_FILE" "$ZS_PROGRESS_FILE" "$ZS_ANSWERS_FILE" "$ZS_INSTALL_CONF"
 zs_ok "Application code removed"
 
+# remove_user NAME - end the account's remaining processes (its systemd user manager is still shutting down right after
+# disable-linger, and userdel refuses an account that has processes), delete it, and report whether it is really gone.
+remove_user() {
+  local u="$1" i
+  id "$u" &>/dev/null || return 0
+  loginctl terminate-user "$u" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -u "$u" >/dev/null 2>&1 || break
+    if (( i >= 4 )); then pkill -KILL -u "$u" 2>/dev/null || true; fi
+    sleep 0.5
+  done
+  userdel "$u" 2>/dev/null || true
+  if id "$u" &>/dev/null; then return 1; fi
+  return 0
+}
+
 if (( PURGE )); then
+  left=()
+  remove_user "$ZS_DASH_USER" || left+=("$ZS_DASH_USER")
+  remove_user "$ZS_SVC_USER" || left+=("$ZS_SVC_USER")
   rm -rf "$ZS_DASH_HOME" "$ZS_SVC_HOME" "$ZS_ETC_DIR" /var/backups/zoom-stream "$ZS_CREDENTIALS_FILE"
-  userdel "$ZS_DASH_USER" 2>/dev/null || true
-  userdel "$ZS_SVC_USER" 2>/dev/null || true
-  zs_ok "Data, backups and the service users deleted"
+  if (( ${#left[@]} )); then
+    zs_ok "Data and backups deleted"
+    zs_warn "Could not delete the user account(s): ${left[*]} (still in use). Remove later with: sudo userdel <name>"
+  else
+    zs_ok "Data, backups and the service users deleted"
+  fi
 else
   zs_info "Data kept: $ZS_DASH_HOME/data, $ZS_APP_DIR (.env, logs), /var/backups/zoom-stream, $ZS_ETC_DIR"
   zs_info "The '$ZS_SVC_USER' and '$ZS_DASH_USER' users were kept because they own that data."
@@ -96,10 +122,12 @@ fi
 
 if (( REMOVE_PKGS )); then
   DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 -y purge zoom google-chrome-stable caddy >/dev/null 2>&1 || true
-  rm -f /etc/apt/sources.list.d/google-chrome.list
+  rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
   zs_ok "Zoom, Google Chrome and Caddy removed"
 fi
 
 echo
 zs_ok "Uninstall complete. The project files in $SRC were left in place (delete them with: sudo rm -rf $SRC)."
 zs_say "  Firewall rules (ufw) were not changed."
+trap - ERR
+exit 0
