@@ -5,6 +5,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-14
+
+Audit release: the public installer was compared with a working production server and tested on a server again.
+
+### Changed
+- Caddy is installed from Caddy's official apt repository (current stable, signing-key fingerprint checked) instead of
+  Ubuntu 24.04's Caddy 2.6.2. Ubuntu's package remains the automatic fallback. `update.sh` upgrades an existing
+  install in place; the Caddyfile and certificates are kept.
+- Indirect Python dependencies are pinned (`dashboard/constraints.txt`), so every install resolves to the same
+  tested package set.
+- CI uses `actions/checkout@v7` and `actions/setup-python@v7` (Node 20 actions are deprecated).
+
+### Fixed
+- Firewall step: SSH is allowed on the port(s) the server really uses before ufw is enabled. With SSH on a
+  non-default port the installer could previously lock the operator out.
+- `update.sh` without `--ref` no longer moves an install made from `main` back to an older release tag.
+- The one-command installer run again on an unfinished install now updates the existing clone to the requested
+  `--ref`; a `/opt/zoom-stream` that is not a clone of this project is refused with an explanation.
+- `rsync` (used by Chrome account backup/import) is installed; more tools are verified after the package step.
+- Installer tools run in the C locale, so `ufw`/`apt` output is understood on servers set to another language.
+- `uninstall.sh`: an unexpected failure names its line instead of ending silently, the script ends with an explicit
+  success status, service accounts are removed reliably (and it says so when one could not be), and the Chrome and
+  Caddy apt sources are removed together with the packages.
+- Output page: choosing an output larger than the virtual screen now says that the picture is only enlarged, and
+  `docs/configuration.md` explains how to get a true 1080p screen.
+
 ## [1.0.1] - 2026-11-14
 
 ### Changed

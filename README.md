@@ -14,7 +14,7 @@
   <a href="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Ubuntu 24.04 LTS" src="https://img.shields.io/badge/Ubuntu-24.04%20LTS-E95420?logo=ubuntu&logoColor=white">
   <img alt="Python 3.12" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
-  <img alt="Release" src="https://img.shields.io/badge/release-v1.0.1-success">
+  <img alt="Release" src="https://img.shields.io/badge/release-v1.0.2-success">
 </p>
 
 ---

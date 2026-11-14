@@ -34,5 +34,5 @@ Downloaded from their publishers or the Ubuntu archive, under their own terms, w
 
 * **Zoom Workplace for Linux** - proprietary, from zoom.us. Not redistributed by this project.
 * **Google Chrome** - proprietary, from dl.google.com. Not redistributed by this project.
-* **FFmpeg** (Ubuntu package, LGPL/GPL depending on build), **Caddy** (Apache-2.0), Xvfb, Openbox, x11vnc, PipeWire,
+* **FFmpeg** (Ubuntu package, LGPL/GPL depending on build), **Caddy** (Apache-2.0, from Caddy's official apt repository at dl.cloudsmith.io, or Ubuntu's package as fallback), Xvfb, Openbox, x11vnc, PipeWire,
   websockify and other Ubuntu packages - their own licences.
