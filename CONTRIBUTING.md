@@ -15,7 +15,7 @@ The dashboard and most tests run on any machine with Python 3.12 and bash (Linux
 the full stack needs Ubuntu 24.04.
 
 ```bash
-git clone https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS.git
+git clone https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS.git
 cd REPO/dashboard
 python3 -m venv venv && . venv/bin/activate
 pip install -r requirements-dev.txt

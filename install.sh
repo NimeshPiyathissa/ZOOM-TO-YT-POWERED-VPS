@@ -2,9 +2,9 @@
 # Zoom to YouTube Live Streaming - guided installer for a fresh Ubuntu 24.04 LTS server.
 #
 #   One command (interactive):
-#     curl -fsSL https://raw.githubusercontent.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS/main/install.sh -o install.sh && sudo bash install.sh
+#     curl -fsSL https://raw.githubusercontent.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS/main/install.sh -o install.sh && sudo bash install.sh
 #   or from a clone:
-#     git clone https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS.git /opt/zoom-stream && sudo /opt/zoom-stream/install.sh
+#     git clone https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS.git /opt/zoom-stream && sudo /opt/zoom-stream/install.sh
 #
 #   Options:
 #     --config FILE   unattended install: read every answer from FILE (see installer/config.example)
@@ -23,7 +23,7 @@
 set -Eeuo pipefail
 umask 022
 
-ZS_DEFAULT_REPO="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERD-VPS.git"
+ZS_DEFAULT_REPO="https://github.com/NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS.git"
 ZS_DEFAULT_REF="main"
 ZS_CLONE_DIR="/opt/zoom-stream"
 
