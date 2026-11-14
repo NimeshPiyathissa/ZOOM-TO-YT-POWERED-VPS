@@ -490,3 +490,15 @@ def test_domain_guide_internal_anchors_resolve():
         if md.name == "domain-and-https.md":
             for frag in re.findall(r"\]\(#([\w\-]+)\)", md.read_text(encoding="utf-8")):
                 assert frag in guide_anchors, frag
+
+
+@needs_bash
+def test_doctor_accepts_no_color_like_the_other_tools():
+    # Found on the v1.0.0 test server: `doctor.sh --no-color` was rejected as an unknown option.
+    r = subprocess.run([BASH, _posix(REPO / "doctor.sh"), "--no-color", "--help"], capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "--no-color" in r.stdout and "Unknown option" not in r.stdout + r.stderr
+    r = subprocess.run([BASH, _posix(REPO / "doctor.sh"), "--bogus"], capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    assert r.returncode != 0 and "Unknown option: --bogus" in r.stdout + r.stderr

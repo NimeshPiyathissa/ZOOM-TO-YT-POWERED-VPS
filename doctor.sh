@@ -3,6 +3,7 @@
 #
 #   sudo ./doctor.sh            run every check
 #   sudo ./doctor.sh --updates  also check GitHub for a newer release
+#   --no-color                  plain output
 #
 # Exit code: 0 = no problems, 1 = at least one problem found.
 set -uo pipefail
@@ -13,12 +14,15 @@ source "$SRC/installer/lib/common.sh"
 source "$SRC/installer/lib/domain.sh"
 
 CHECK_UPDATES=0
-case "${1:-}" in
-  --updates) CHECK_UPDATES=1 ;;
-  -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  "") ;;
-  *) zs_die "Unknown option: $1 (see --help)" ;;
-esac
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --updates) CHECK_UPDATES=1 ;;
+    --no-color) export NO_COLOR=1; zs_init_colors ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) zs_die "Unknown option: $1 (see --help)" ;;
+  esac
+  shift
+done
 [[ $EUID -eq 0 ]] || zs_die "Run as root: sudo $0"
 
 PROBLEMS=0 WARNINGS=0
