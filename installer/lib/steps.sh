@@ -78,7 +78,10 @@ zs_step_packages() {
   _record_version ffmpeg "$(ffmpeg -version | head -n1 | awk '{print $3}')"
   _record_version python3 "$(python3 -c 'import sys; print(sys.version.split()[0])')"
   _record_version caddy "$(caddy version 2>/dev/null | awk '{print $1}')"
-  _record_version caddy-source "$(apt-cache policy caddy 2>/dev/null | grep -q cloudsmith && echo official || echo ubuntu)"
+  local caddy_policy
+  caddy_policy="$(apt-cache policy caddy 2>/dev/null || true)"     # into a variable first: grep -q on a pipe + pipefail
+  if [[ "$caddy_policy" == *cloudsmith* ]]; then _record_version caddy-source official
+  else _record_version caddy-source ubuntu; fi
 }
 
 # ------------------------------------------------------------------ 2. Google Chrome (official .deb, adds Google's apt repo)
