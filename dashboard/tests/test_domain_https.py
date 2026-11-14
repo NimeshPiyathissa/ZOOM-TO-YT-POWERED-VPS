@@ -580,3 +580,13 @@ def test_install_dashboard_never_uses_a_plain_ip_echo_request():
     text = (REPO / "dashboard" / "install-dashboard.sh").read_text(encoding="utf-8")
     assert re.search(r'^VPS_IP="\$\(_public_ipv4\)"$', text, re.M)
     assert not re.search(r"curl -s --max-time \d+ https://ifconfig\.me", text)
+
+
+def test_setup_https_ip_only_hint_points_to_set_domain():
+    # Found on the v1.0.0 test server (check B5): `set-domain.sh --none` printed a hint to the internal
+    # `setup-https.sh --domain` and a literal "https://<vps-ip>".
+    text = (REPO / "scripts" / "setup-https.sh").read_text(encoding="utf-8")
+    body = text.split("\n# ---- ", 1)[1]   # skip the header comment (usage lines may name setup-https.sh itself)
+    assert "https://<vps-ip>" not in body
+    assert "$0 --domain your.domain.example" not in body
+    assert "set-domain.sh stream.example.com" in body

@@ -188,6 +188,6 @@ if [[ -n "$DOMAIN" ]] && (( STAGING )); then
 elif [[ -n "$DOMAIN" ]]; then
   say "HTTPS configured: https://$DOMAIN (Let's Encrypt, renewed automatically by Caddy)."
 else
-  say "HTTPS configured with the self-signed certificate: https://<vps-ip> (browsers warn once)."
-  say "For a browser-trusted certificate later: $0 --domain your.domain.example"
+  say "HTTPS configured with the self-signed certificate for this server's IP address (browsers warn once)."
+  say "For a browser-trusted certificate later: sudo bash $(cd "$(dirname "$0")/.." && pwd)/set-domain.sh stream.example.com"
 fi
