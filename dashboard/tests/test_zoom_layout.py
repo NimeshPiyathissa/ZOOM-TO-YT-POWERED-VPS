@@ -88,7 +88,9 @@ def _compose(tmp_path, name, W, H, picture, chrome_src=FIX / "webinar_speaker.pn
     return out
 
 
-WHITEBOARD = "color=c=0xe8e4ec:s={s},drawgrid=w=64:h=64:t=3:c=0x203070"
+# Every picture source starts with format=rgb24: otherwise drawgrid/drawbox negotiate yuv420p, which older ffmpeg
+# (6.1, Ubuntu 24.04) silently rounds down to an even height - a 575-row picture became 574 rows plus a black line.
+WHITEBOARD = "color=c=0xe8e4ec:s={s},format=rgb24,drawgrid=w=64:h=64:t=3:c=0x203070"
 
 
 def test_camera_filling_the_whole_screen_has_no_bands(tmp_path):
@@ -125,7 +127,7 @@ def test_tall_display_gives_zoom_an_exact_1920x1080_picture(tmp_path):
 def test_dark_slide_share_keeps_every_visible_stroke(tmp_path):
     """A dark-theme slide: black background with light text, including text right at its edges. Only flat black
     margins may go - never a column or row that carries text."""
-    slide = ("color=c=black:s={s},drawbox=x=0:y=200:w=300:h=8:c=white:t=fill,drawbox=x=iw-300:y=400:w=300:h=8:c=white:t=fill,"
+    slide = ("color=c=black:s={s},format=rgb24,drawbox=x=0:y=200:w=300:h=8:c=white:t=fill,drawbox=x=iw-300:y=400:w=300:h=8:c=white:t=fill,"
              "drawbox=x=600:y=0:w=8:h=120:c=white:t=fill,drawbox=x=900:y=ih-120:w=8:h=120:c=white:t=fill")
     r = detect(_compose(tmp_path, "darkslide", 1920, 1080, slide))
     if r["ok"]:

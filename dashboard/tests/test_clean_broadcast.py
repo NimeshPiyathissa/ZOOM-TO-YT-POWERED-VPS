@@ -126,7 +126,10 @@ def test_capture_framing_prefers_clean_broadcast_and_falls_back_safely():
     vf = C.plan((1920, 1080), OUT, layout())["filter"]
     env = {"SOURCE_TYPE": "zoom", "ZOOM_CLEAN_BROADCAST": "1", "ZOOM_CLEAN_FILTER": vf, "ZOOM_CLEAN_CAPTURE": "1920x1080",
            "ZOOM_FULLSCREEN_LIVE": "1", "ZOOM_FRAMING_BOX": "160:90:1600:900", "ZOOM_CAPTURE_SIZE": "1920x1080",
-           "ZOOM_MEETING_ONLY": "1", "ZOOM_MEETING_ONLY_FIT": "fill", "PATH": "/usr/bin:/bin"}
+           "ZOOM_MEETING_ONLY": "1", "ZOOM_MEETING_ONLY_FIT": "fill", "PATH": "/usr/bin:/bin",
+           # Never ask a real X server for its size: on a machine running the stream (DISPLAY :99) xdpyinfo would
+           # report that screen and the "screen changed size" branch would win.
+           "DISPLAY": ":zs-test-no-display"}
     assert _bash(snip, env) == f"1920x1080|{vf}"
     tall = C.plan((1928, 1225), OUT, layout(size=(1928, 1225)))["filter"]
     assert _bash(snip, {**env, "ZOOM_CLEAN_FILTER": tall, "ZOOM_CLEAN_CAPTURE": "1928x1225"}) == f"1928x1225|crop=1920:1080:4:69,{TAIL}"
