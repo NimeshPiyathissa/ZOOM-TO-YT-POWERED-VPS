@@ -12,6 +12,15 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 source ./lib.sh
+
+# zoom.service is enabled at boot, but only a Zoom source needs it. Any other active source (web page, direct
+# stream, ...) is handled by its own unit: exit cleanly so systemd leaves this unit stopped instead of "failed".
+# Mirror image of browser-source.sh's own SOURCE_TYPE guard.
+if [[ "${SOURCE_TYPE:-zoom}" != "zoom" ]]; then
+  log "SOURCE_TYPE is '${SOURCE_TYPE}', not a Zoom meeting - nothing to do here, exiting cleanly"
+  exit 0
+fi
+
 wait_for_x
 
 # join_method=web (or auto after a fallback - see the dashboard's
