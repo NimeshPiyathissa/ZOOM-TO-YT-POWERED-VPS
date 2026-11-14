@@ -95,6 +95,27 @@ It checks the server, asks a few questions, shows a summary to confirm, then ins
 (about 10-20 minutes). If anything fails it tells you which step, why, and how to continue - running it again resumes
 where it stopped. New to servers? Follow the step-by-step **[installation guide](docs/installation.md)**.
 
+### Beginner path: subdomain + HTTPS in 6 steps
+
+1. **Get a server** - Ubuntu 24.04, 4 vCPU / 8 GB. Note its **public IPv4 address** (e.g. `203.0.113.10`; on AWS
+   attach an Elastic IP first).
+2. **Open ports** in the provider's firewall / security group: TCP **22** (SSH), **80** and **443** (HTTPS).
+3. **Create a DNS A record** where you manage your domain: Type `A`, Name `stream`, Value = the server IP
+   (Cloudflare: *DNS only*, grey cloud). This makes `stream.example.com` point at the server.
+4. **Install**: SSH into the server and run the two commands above.
+5. **Answer the wizard** - type `stream.example.com` as the domain. It shows the server IP and the exact record,
+   checks DNS (and can wait while it updates), then choose `letsencrypt` and enter an e-mail.
+6. **Open `https://stream.example.com`** - the installer has already checked that the trusted certificate works.
+   Caddy renews it automatically.
+
+No domain? Type `none`: the dashboard is at `https://<server-ip>` with a self-signed certificate (browser warning).
+Add a domain any time with `sudo bash /opt/zoom-stream/set-domain.sh stream.example.com`.
+Full walkthrough of every step and choice, with DNS/SSL troubleshooting:
+**[Subdomain, DNS and HTTPS guide](docs/domain-and-https.md)**.
+
+Installing the same subdomain repeatedly for testing? Use `sudo bash install.sh --staging` (Let's Encrypt test
+certificates, no rate-limit trouble, not browser-trusted).
+
 ### What the installer asks
 
 ```
@@ -108,8 +129,10 @@ Checking this server
   ✓ Download sources reachable (Ubuntu, Google, Zoom, PyPI, GitHub)
   ✓ YouTube live ingest reachable (a.rtmps.youtube.com:443)
 
-Domain name                   stream.example.com   (checks that DNS points here, or 'none')
+Domain name (subdomain)       stream.example.com   (shows this server's IP + the DNS A record, checks DNS
+                                                    with wait-and-retry, or 'none' for IP-only)
 HTTPS certificate             letsencrypt / self-signed
+Let's Encrypt e-mail          you@example.com      (expiry notices only)
 Dashboard admin username      admin
 Dashboard admin password      (hidden, typed twice, strength-checked)
 YouTube ingest server         rtmps://a.rtmps.youtube.com:443/live2
@@ -143,6 +166,7 @@ More in the [usage guide](docs/usage.md).
 
 ```bash
 sudo /opt/zoom-stream/doctor.sh      # check everything and explain problems
+sudo /opt/zoom-stream/set-domain.sh stream.example.com   # add/change the domain + HTTPS (--none, --check)
 sudo /opt/zoom-stream/update.sh      # update to the newest release (backup + automatic rollback)
 sudo /opt/zoom-stream/backup.sh      # back up settings, database and encrypted secrets
 sudo /opt/zoom-stream/restore.sh     # restore a backup
@@ -154,6 +178,7 @@ sudo /opt/zoom-stream/uninstall.sh   # remove it (asks before deleting any data)
 | Guide | |
 |---|---|
 | [Installation](docs/installation.md) | Server, DNS, HTTPS, YouTube stream key, Zoom - step by step |
+| [Subdomain, DNS and HTTPS](docs/domain-and-https.md) | A record, wizard, certificates, IP-only mode, DNS/SSL troubleshooting |
 | [Usage](docs/usage.md) | Every dashboard page |
 | [Configuration](docs/configuration.md) | Settings, files and options |
 | [Updating](docs/updating.md) | Updates and rollback |

@@ -29,7 +29,8 @@ The **Logs** page in the dashboard shows the same, with secrets redacted.
 | "Another program is still installing packages" | Ubuntu's automatic updates run right after first boot. Wait 5-10 minutes and run the installer again. |
 | "A download failed because the network connection dropped" | Run the installer again; it resumes and retries. |
 | "Cannot reach: dl.google.com zoom.us ..." | Outbound HTTPS is blocked. Allow outbound TCP 443 at the provider. |
-| Domain "points to ... but this server is ..." | Fix the DNS A record, wait a few minutes, choose *re-check*. Or continue with `self-signed` / `none`. |
+| Domain "points to ... but this server is ..." / "has no A record yet" | Fix the DNS A record, choose `w` to wait while it updates. Or continue with `none`. Details: [DNS troubleshooting](domain-and-https.md#dns). |
+| "HTTPS for ... is not working yet" at the end | The line below it names the cause (DNS, PORT, RATE LIMIT, CAA). Fix it, then `sudo bash /opt/zoom-stream/set-domain.sh --check`. See [certificate troubleshooting](domain-and-https.md#certificates). |
 | A step failed | Read the "Why:" line and the log lines shown, fix the cause, run `sudo bash /opt/zoom-stream/install.sh`. |
 
 ## Dashboard
@@ -37,7 +38,7 @@ The **Logs** page in the dashboard shows the same, with secrets redacted.
 | Symptom | Cause and fix |
 |---|---|
 | Browser cannot connect at all | Provider firewall/security group does not allow TCP 443 (and 80 for Let's Encrypt). `doctor.sh` checks the server side. |
-| Certificate warning | Expected with `self-signed`. With a domain: DNS must point here and port 80 must be open, then `sudo systemctl restart caddy`. |
+| Certificate warning | Expected with `self-signed` / IP-only and with `--staging` test certificates. With a domain: `sudo bash /opt/zoom-stream/set-domain.sh --check` names the problem; see [Subdomain, DNS and HTTPS](domain-and-https.md#12-troubleshooting-dns-and-certificates). |
 | "Too many failed attempts" | 5 failed sign-ins lock that username from that address for 15 minutes. Wait, or reset the password ([configuration.md](configuration.md#admin-password)). |
 | Forgot the admin password | `cd /home/dashboard/app && sudo -u dashboard /home/dashboard/venv/bin/python -m app.cli set-password admin` |
 | Remote GUI will not connect after a reboot | The encrypted store (which holds the VNC password) could not unlock automatically. `doctor.sh` checks this; see [encryption.md](encryption.md#unlock-modes). |

@@ -446,3 +446,36 @@ def test_set_domain_only_reloads_caddy_and_never_touches_streaming_units():
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     for unit in ("ffmpeg-stream", "dashboard.service", "zs_user_systemctl", "systemctl restart"):
         assert unit not in code
+
+
+def test_domain_guide_exists_and_is_linked_from_the_entry_points():
+    guide = REPO / "docs" / "domain-and-https.md"
+    text = guide.read_text(encoding="utf-8")
+    for must in ("A record", "DNS only", "--staging", "set-domain.sh --check", "--none", "RATE LIMIT", "CAA",
+                 "Elastic IP", "80", "443"):
+        assert must in text, must
+    for doc in ("README.md", "docs/installation.md", "docs/troubleshooting.md", "docs/release-notes/v1.0.0.md"):
+        assert "domain-and-https.md" in (REPO / doc).read_text(encoding="utf-8"), doc
+    # Every command the guide tells users to run exists with that option.
+    set_domain = (REPO / "set-domain.sh").read_text(encoding="utf-8")
+    for opt in ("--none)", "--check)", "--staging)", "--email)"):
+        assert opt in set_domain, opt
+    assert "--staging) STAGING=1" in (REPO / "install.sh").read_text(encoding="utf-8")
+
+
+def test_domain_guide_internal_anchors_resolve():
+    def anchors(path):
+        out = set()
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^#+\s+(.*)", line)
+            if m:
+                out.add(re.sub(r"[^\w\- ]", "", m.group(1).strip().lower()).replace(" ", "-"))
+        return out
+    docs = REPO / "docs"
+    guide_anchors = anchors(docs / "domain-and-https.md")
+    for md in [REPO / "README.md", *docs.glob("*.md"), *docs.glob("release-notes/*.md")]:
+        for frag in re.findall(r"domain-and-https\.md#([\w\-]+)", md.read_text(encoding="utf-8")):
+            assert frag in guide_anchors, f"{md.name}: #{frag}"
+        if md.name == "domain-and-https.md":
+            for frag in re.findall(r"\]\(#([\w\-]+)\)", md.read_text(encoding="utf-8")):
+                assert frag in guide_anchors, frag

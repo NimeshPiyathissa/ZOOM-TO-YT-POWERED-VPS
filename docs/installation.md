@@ -4,7 +4,7 @@ This guide assumes no prior server experience. It takes about 30-45 minutes, mos
 
 1. [Get a server](#1-get-a-server)
 2. [Connect to it](#2-connect-to-it)
-3. [Optional: point a domain at it](#3-optional-point-a-domain-at-it)
+3. [Optional: point a (sub)domain at it](#3-optional-point-a-domain-at-it)
 4. [Get your YouTube stream key](#4-get-your-youtube-stream-key)
 5. [Run the installer](#5-run-the-installer)
 6. [Sign in and test](#6-sign-in-and-test)
@@ -48,18 +48,24 @@ name.
 
 ## 3. Optional: point a domain at it
 
-With a domain (for example `stream.example.com`) the dashboard gets a free, browser-trusted certificate from
-Let's Encrypt. Without one you use `https://<server-ip>` and accept a one-time browser warning about a self-signed
-certificate - both work the same otherwise.
+With a domain - usually a **subdomain** such as `stream.example.com` - the dashboard gets a free, browser-trusted
+certificate from Let's Encrypt, renewed automatically. Without one you use `https://<server-ip>` and the browser warns
+about a self-signed certificate. Everything else works the same, and you can add a domain later.
 
-At your domain registrar or DNS provider, create an **A record**:
+Do this **before** running the installer so DNS has time to update:
 
-| Type | Name | Value |
-|---|---|---|
-| A | `stream` (or `@` for the bare domain) | your server's public IP |
+1. Note the server's **public IPv4 address** (provider control panel; on AWS attach an Elastic IP first).
+2. Where you manage your domain's DNS, create an **A record**:
 
-DNS can take a few minutes to update. The installer checks that the name points at the server and tells you if it
-does not yet.
+   | Type | Name / Host | Value | TTL |
+   |---|---|---|---|
+   | A | `stream` | your server's public IP | Auto / 300 |
+
+   Cloudflare: set *Proxy status* to **DNS only** (grey cloud). Remove any other A/AAAA record with the same name.
+3. Make sure TCP **80 and 443** are open at the provider (step 1).
+
+The installer shows the IP and this exact record again, checks DNS, and can wait while it updates.
+Step-by-step with provider notes and troubleshooting: **[Subdomain, DNS and HTTPS](domain-and-https.md)**.
 
 ## 4. Get your YouTube stream key
 
@@ -93,8 +99,9 @@ What happens:
 
    | Question | Notes |
    |---|---|
-   | Domain name | Your domain, or `none` to use the IP address |
-   | HTTPS certificate | `letsencrypt` (needs the domain and port 80) or `self-signed` |
+   | Domain name (subdomain) | e.g. `stream.example.com`, or `none` for IP-only. Shows the server IP and the A record to create, then checks DNS - see below |
+   | HTTPS certificate | `letsencrypt` (trusted, automatic renewal; needs ports 80 + 443) or `self-signed` |
+   | Let's Encrypt e-mail | Only for expiry notices |
    | Admin username / password | What you sign in to the dashboard with. 12+ characters, mixed, or a 16+ character passphrase |
    | YouTube stream URL / key | From step 4. Press Enter on the key to set it later |
    | Zoom display name | The name other participants see |
@@ -104,11 +111,18 @@ What happens:
    | Master encryption password | Protects the encrypted secret store. Press Enter to generate one |
    | Firewall / security updates | Recommended: yes and yes |
 
+   **DNS check.** If the name does not point at this server yet, the wizard says why (no record, wrong IP,
+   Cloudflare proxy, extra record) and offers: `w` wait and re-check automatically for up to 10 minutes, `r` re-check
+   now, `e` enter another name, `c` continue anyway, `n` no domain (IP-only).
+
 4. **Summary** - every answer, with passwords masked. Press Enter to install, a number to change an answer, or
    `q` to cancel without changing anything.
 5. **Installation** - 13 numbered steps with a progress indicator. Full details go to
    `/var/log/zoom-stream/install.log`.
-6. **Finish** - the status of every service, the dashboard address and the next steps.
+6. **Checking HTTPS** - firewall and reachability of ports 80/443, DNS, then it waits for the certificate and loads
+   the dashboard over HTTPS. Problems are explained with the fix (see
+   [troubleshooting](domain-and-https.md#12-troubleshooting-dns-and-certificates)).
+7. **Finish** - the status of every service, the dashboard address and the next steps.
 
 Generated passwords (if you pressed Enter for them) are written to `/root/zoom-stream-credentials.txt`, readable only
 by root. View them with `sudo cat /root/zoom-stream-credentials.txt`, store them in a password manager, then delete
@@ -127,6 +141,10 @@ sudo /opt/zoom-stream/install.sh --config /root/zoom-stream.conf
 
 Every value is validated exactly like the interactive questions; if anything is wrong, all problems are listed and
 nothing is installed. Delete the file afterwards.
+
+**Testing the installer repeatedly with the same subdomain?** Add `--staging` (or `LE_STAGING=yes` in the config
+file) to use Let's Encrypt's test service and avoid its rate limits. Staging certificates are not browser-trusted;
+switch to a real one later with `sudo bash /opt/zoom-stream/set-domain.sh stream.example.com`.
 
 ## 6. Sign in and test
 
@@ -147,5 +165,9 @@ Run `sudo /opt/zoom-stream/doctor.sh` at any time to check the installation.
 - **Start over with different answers:** `sudo bash /opt/zoom-stream/install.sh --fresh`.
 - **The connection dropped during installation.** Reconnect and run the installer again; it resumes.
 - **The dashboard does not open.** Check the provider firewall (step 1), then run `sudo /opt/zoom-stream/doctor.sh`.
+- **DNS or certificate problems.** Run `sudo bash /opt/zoom-stream/set-domain.sh --check`, then see
+  [DNS and certificate troubleshooting](domain-and-https.md#12-troubleshooting-dns-and-certificates).
+- **Add, change or remove the domain later:** `sudo bash /opt/zoom-stream/set-domain.sh stream.example.com`
+  (or `--none`). It does not interrupt a running broadcast.
 
 More in [troubleshooting](troubleshooting.md).

@@ -19,6 +19,13 @@ First public release.
 - Configurable schedule timezone: the Schedule page follows the server timezone chosen during installation
   (override with `SCHEDULE_TIMEZONE`).
 - Non-interactive admin password setup: `app.cli set-password --password-stdin` or `ZOOMBOT_ADMIN_PASSWORD`.
+- Subdomain and HTTPS wizard: shows the server's public IP and the DNS A record to create, checks public DNS with
+  wait-and-retry (explains missing/wrong/proxied/extra/AAAA records), checks ports 80/443, verifies HTTPS after
+  installation and explains DNS, port, rate-limit and CAA certificate errors. Caddy issues and renews the
+  Let's Encrypt certificate automatically; IP-only mode keeps a clear warning.
+- `--staging` / `LE_STAGING=yes`: Let's Encrypt staging certificates for repeated test installs.
+- `set-domain.sh`: add, change or remove the domain after installation (`--none`, `--check`), reloading only Caddy.
+- `docs/domain-and-https.md`: beginner guide to subdomains, DNS A records, HTTPS and troubleshooting.
 - Daily disk clean-up timer (`zoom-vacuum.timer`) installed and enabled by default.
 - Documentation set, security policy, contribution guide, issue and pull-request templates.
 
@@ -31,6 +38,7 @@ First public release.
   are now replaced (with a backup), hand-edited ones still need explicit confirmation.
 - Installer: apt calls wait for the package lock instead of failing while automatic updates run.
 - Tests no longer depend on the machine's DNS resolver for `example.com`.
+- `doctor.sh`: a stray line continuation hid the "firewall blocks HTTPS" result.
 
 ### Changed
 - The application is installed as a git clone (`/opt/zoom-stream`) so it can be updated in place.

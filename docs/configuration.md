@@ -75,13 +75,19 @@ sudo systemctl restart dashboard
 
 ## HTTPS
 
+Add, change or remove the domain with `set-domain.sh` - it checks DNS and ports, configures Caddy, waits for the
+certificate, verifies HTTPS and records the choice in `/etc/zoom-stream/install.conf` (used by `doctor.sh`):
+
 ```bash
-sudo /opt/zoom-stream/scripts/setup-https.sh --domain stream.example.com --email you@example.com   # Let's Encrypt
-sudo /opt/zoom-stream/scripts/setup-https.sh                                                       # self-signed, IP
+sudo bash /opt/zoom-stream/set-domain.sh stream.example.com --email you@example.com   # Let's Encrypt (auto-renewed)
+sudo bash /opt/zoom-stream/set-domain.sh stream.example.com --staging                 # test certificates
+sudo bash /opt/zoom-stream/set-domain.sh --none                                       # IP only, self-signed
+sudo bash /opt/zoom-stream/set-domain.sh --check                                      # re-check everything
 ```
 
-The script validates the configuration with Caddy before installing it and keeps a backup of the previous file.
-Open port 80 as well for Let's Encrypt (`sudo ufw allow 80/tcp`).
+It calls `scripts/setup-https.sh`, which writes `/etc/caddy/Caddyfile`, validates it with Caddy before installing it
+and keeps a backup of the previous file. Only Caddy is reloaded. Step-by-step guide:
+[Subdomain, DNS and HTTPS](domain-and-https.md).
 
 ## Admin password
 

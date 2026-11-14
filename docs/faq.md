@@ -27,8 +27,9 @@ down during long streams.
 For light 720p use, maybe. The installer warns but lets you continue. Watch for dropped frames.
 
 ### Does it work without a domain?
-Yes. Use `none`; the dashboard is served at `https://<server-ip>` with a self-signed certificate (one browser
-warning).
+Yes. Use `none`; the dashboard is served at `https://<server-ip>` with a self-signed certificate - encrypted, but
+browsers show a "Not secure" warning. Add a subdomain later with `sudo bash /opt/zoom-stream/set-domain.sh
+stream.example.com` ([guide](domain-and-https.md)).
 
 ### Which Zoom links work?
 Normal join links (`/j/...`), personal registrant links (`/w/...?tk=...`), meeting ID + passcode, and pasted
