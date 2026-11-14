@@ -548,3 +548,35 @@ def test_uninstall_accepts_no_color_like_the_other_tools():
     r = subprocess.run([BASH, _posix(REPO / "uninstall.sh"), "--bogus"], capture_output=True, text=True,
                        timeout=30, stdin=subprocess.DEVNULL)
     assert r.returncode != 0 and "Unknown option: --bogus" in r.stdout + r.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("script, func_name", [
+    ("dashboard/install-dashboard.sh", "_public_ipv4"),   # SAN/CN of the self-signed certificate (IP-only mode)
+    ("installer/lib/common.sh", "zs_public_ip"),           # wizard, set-domain.sh, doctor.sh
+])
+@pytest.mark.parametrize("answer, expected", [
+    ("2400:8901::2000:2aff:fe77:7fd8", ""),
+    ("198.51.100.20", "198.51.100.20"),
+])
+def test_public_ip_detection_is_ipv4_only(tmp_path, script, func_name, answer, expected):
+    # Found on the v1.0.0 test server (dual-stack Linode, check B2): the IP-only self-signed certificate was issued
+    # for the IPv6 address, so it did not cover https://<IPv4> - the address the installer tells users to open.
+    text = (REPO / script).read_text(encoding="utf-8")
+    func = re.search(r"^" + re.escape(func_name) + r"\(\) \{.*?^\}", text, re.S | re.M).group(0)
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    curl = fakebin / "curl"
+    curl.write_text('#!/usr/bin/env bash\n[[ " $* " == *" -4 "* ]] && echo "$FAKE_V4" || echo "2400:8901::1"\n',
+                    encoding="utf-8", newline="\n")
+    curl.chmod(0o755)
+    env = dict(os.environ, PATH=_posix(fakebin) + ":" + os.environ.get("PATH", ""), FAKE_V4=answer)
+    r = subprocess.run([BASH, "-c", func + f'\nprintf "IP=[%s]" "$({func_name})"'], capture_output=True, text=True,
+                       timeout=60, env=env, stdin=subprocess.DEVNULL)
+    assert f"IP=[{expected}]" in r.stdout, r.stdout + r.stderr
+
+
+def test_install_dashboard_never_uses_a_plain_ip_echo_request():
+    text = (REPO / "dashboard" / "install-dashboard.sh").read_text(encoding="utf-8")
+    assert re.search(r'^VPS_IP="\$\(_public_ipv4\)"$', text, re.M)
+    assert not re.search(r"curl -s --max-time \d+ https://ifconfig\.me", text)

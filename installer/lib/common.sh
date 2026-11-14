@@ -202,7 +202,7 @@ zs_gen_password() {
 zs_public_ip() {
   local ip url
   for url in https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
-    ip="$(curl -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    ip="$(curl -4 -fsS --max-time 6 "$url" 2>/dev/null | tr -d '[:space:]')" || true
     if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then printf '%s' "$ip"; return 0; fi
   done
   return 1

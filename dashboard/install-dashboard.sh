@@ -26,7 +26,17 @@ ACTION="${1:-install}"
 # summary panel. Provider-agnostic (works on any VPS, not just AWS) -
 # falls back to the private-network hostname if outbound internet isn't
 # available yet, so the cert still generates rather than failing setup.
-VPS_IP="$(curl -s --max-time 3 https://ifconfig.me || true)"
+# _public_ipv4 - forced to IPv4: on dual-stack servers (e.g. Linode, Hetzner) an IP-echo service answers over IPv6,
+# and the certificate would then name the IPv6 address instead of the https://<IPv4> address users are told to open.
+_public_ipv4() {
+  local url ip
+  for url in https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
+    ip="$(curl -4 -fsS --max-time 4 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then printf '%s' "$ip"; return 0; fi
+  done
+  return 0
+}
+VPS_IP="$(_public_ipv4)"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this as root: sudo ./install-dashboard.sh" >&2
