@@ -317,6 +317,17 @@ def test_https_verify_succeeds_with_a_trusted_certificate(sh):
 
 
 @needs_bash
+def test_https_verify_check_only_does_not_claim_to_request_a_certificate(sh):
+    # Found on the v1.0.0 test server: `set-domain.sh --check` said "Requesting the HTTPS certificate".
+    r = sh('zs_https_verify stream.example.com no', FAKE_HTTP_CODE="302", ZS_HTTPS_CHECK_ONLY="1")
+    assert "Checking the HTTPS certificate for stream.example.com" in r.stdout and "Requesting" not in r.stdout
+    r = sh('zs_https_verify stream.example.com no', FAKE_HTTP_CODE="302")
+    assert "Requesting the HTTPS certificate" in r.stdout
+    setdomain = (REPO / "set-domain.sh").read_text(encoding="utf-8")
+    assert "ZS_HTTPS_CHECK_ONLY=1" in setdomain
+
+
+@needs_bash
 def test_https_verify_stops_early_on_a_rate_limit_and_explains_it(sh):
     log = sh.tmp / "caddy.log"
     log.write_text(CADDY_LOGS["rate"], encoding="utf-8")

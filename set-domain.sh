@@ -94,7 +94,7 @@ if [[ "$MODE" == "check" ]]; then
     if ! zs_dns_check "$cur" "$ZS_PUBLIC_IP"; then rc=1; zs_dns_instructions "$cur" "$ZS_PUBLIC_IP"; fi
     zs_dns_explain "$cur" "$ZS_PUBLIC_IP"
     zs_ports_check "$ZS_PUBLIC_IP" letsencrypt || rc=1
-    ZS_HTTPS_WAIT="${ZS_HTTPS_WAIT:-30}" zs_https_verify "$cur" "${stg:-no}" || rc=1
+    ZS_HTTPS_CHECK_ONLY=1 ZS_HTTPS_WAIT="${ZS_HTTPS_WAIT:-30}" zs_https_verify "$cur" "${stg:-no}" || rc=1
   fi
   exit "$rc"
 fi

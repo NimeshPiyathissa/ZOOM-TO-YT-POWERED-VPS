@@ -292,7 +292,8 @@ zs_https_verify() {
   start="$(date +%s)"
   local label="Let's Encrypt"
   [[ "$staging" == "yes" ]] && label="Let's Encrypt STAGING (test certificates)"
-  zs_info "Requesting the HTTPS certificate for ${d} from ${label} - usually under a minute..."
+  if [[ -n "${ZS_HTTPS_CHECK_ONLY:-}" ]]; then zs_info "Checking the HTTPS certificate for ${d} (${label})..."
+  else zs_info "Requesting the HTTPS certificate for ${d} from ${label} - usually under a minute..."; fi
   while true; do
     if [[ "$staging" == "yes" ]]; then
       issuer="$(_zs_cert_issuer "$d")"
