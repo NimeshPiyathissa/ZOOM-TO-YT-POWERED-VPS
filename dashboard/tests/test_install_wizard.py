@@ -438,8 +438,9 @@ def test_interactive_questions_reask_on_bad_input_and_keep_good_answers(tmp_path
             'zs_summary_loop && echo "CONFIRMED"\n'
             'for k in "${ZS_ANSWER_KEYS[@]}"; do v="$(zs_get "$k")"; '
             'if zs_is_secret_key "$k"; then echo "$k=<${#v}>"; else echo "$k=$v"; fi; done\n')
-    r = _bash(tmp_path, body, {"ZS_TTY": _posix(answers), "ZS_TTY_OUT": "/dev/null", "ZS_ZONEINFO_DIR": _posix(zi)},
-              libs=("common", "validate", "questions"))
+    r = _bash(tmp_path, body, {"ZS_TTY": _posix(answers), "ZS_TTY_OUT": "/dev/null", "ZS_ZONEINFO_DIR": _posix(zi),
+                               "ZS_PUBLIC_IP": "203.0.113.7"},
+              libs=("common", "validate", "domain", "questions"))
     out = r.stdout
     assert "CONFIRMED" in out, out + r.stderr
     got = dict(line.split("=", 1) for line in out.splitlines() if re.match(r"^[A-Z_]+=", line))

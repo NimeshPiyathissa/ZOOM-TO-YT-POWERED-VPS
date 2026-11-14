@@ -3,7 +3,7 @@
 # Each question explains itself, shows its default in [brackets], validates the answer and asks again on bad input.
 
 ZS_CPU_CORES="$(nproc 2>/dev/null || echo 1)"
-ZS_PUBLIC_IP=""
+ZS_PUBLIC_IP="${ZS_PUBLIC_IP:-}"
 
 _q_header() { printf '\n%s%s%s\n' "$C_BOLD" "$1" "$C_RESET"; shift; local l; for l in "$@"; do printf '  %s%s%s\n' "$C_DIM" "$l" "$C_RESET"; done; }
 
@@ -18,36 +18,41 @@ _q_ask() {
   done
 }
 
+_q_public_ip() {
+  [[ -n "$ZS_PUBLIC_IP" ]] && return 0
+  ZS_PUBLIC_IP="$(zs_public_ip || true)"
+  if [[ -z "$ZS_PUBLIC_IP" ]]; then
+    zs_warn "This server's public IP address could not be detected automatically."
+    zs_hint "Find it in your provider's control panel (often called 'Public IPv4' or 'Elastic IP')."
+    local v
+    while true; do
+      zs_read v "  Public IP address of this server (Enter = skip): "
+      [[ -z "$v" ]] && return 0
+      if [[ "$v" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then ZS_PUBLIC_IP="$v"; return 0; fi
+      printf '    %sThat is not an IPv4 address (example: 203.0.113.7).%s\n' "$C_YELLOW" "$C_RESET"
+    done
+  fi
+}
+
 q_domain() {
-  _q_header "Domain name" \
-    "The address you will open the dashboard at, e.g. stream.example.com." \
-    "Create a DNS 'A' record pointing to this server first. Type 'none' to use the server's IP address instead" \
-    "(the browser will then show a one-time certificate warning)."
-  local cur v resolved
+  _q_public_ip
+  _q_header "Domain name (subdomain)"     "The address you will open the dashboard at - a subdomain you control, e.g. stream.example.com."     "With a domain you get a free, browser-trusted HTTPS certificate (Let's Encrypt), renewed automatically."     "This server's public IP address: ${ZS_PUBLIC_IP:-unknown}"     "Type 'none' to use the IP address only (self-signed certificate, browser warning). You can add a domain later."
+  local cur v rc
   cur="$(zs_get DOMAIN)"
   while true; do
     _q_ask DOMAIN "${cur:-none}" zs_valid_domain "Domain name, or 'none'"
     v="$(zs_get DOMAIN)"; v="${v,,}"; zs_set DOMAIN "$v"
-    [[ "$v" == "none" ]] && { zs_set SSL_MODE "self-signed"; zs_set LE_EMAIL ""; return 0; }
-    [[ -z "$ZS_PUBLIC_IP" ]] && ZS_PUBLIC_IP="$(zs_public_ip || true)"
-    resolved="$(getent ahostsv4 "$v" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
-    resolved="${resolved% }"
-    if [[ -n "$ZS_PUBLIC_IP" && " $resolved " == *" $ZS_PUBLIC_IP "* ]]; then
-      zs_ok "${v} points to this server (${ZS_PUBLIC_IP})."
+    if [[ "$v" == "none" ]]; then
+      zs_set SSL_MODE "self-signed"; zs_set LE_EMAIL ""
+      zs_ip_only_warning "$ZS_PUBLIC_IP"
       return 0
     fi
-    if [[ -z "$resolved" ]]; then
-      zs_warn "${v} does not resolve to any address yet."
-    else
-      zs_warn "${v} points to ${resolved}, but this server is ${ZS_PUBLIC_IP:-unknown}."
-    fi
-    zs_hint "Create or fix the DNS A record (${v} -> ${ZS_PUBLIC_IP:-the server IP}). DNS changes can take a few minutes."
-    zs_hint "Let's Encrypt cannot issue a certificate until it points here."
-    local choice
-    zs_read choice "  [r] re-check / enter another name   [c] continue anyway   [n] use no domain: "
-    case "${choice,,}" in
-      c) return 0 ;;
-      n) zs_set DOMAIN "none"; zs_set SSL_MODE "self-signed"; zs_set LE_EMAIL ""; return 0 ;;
+    rc=0
+    zs_dns_gate "$v" "$ZS_PUBLIC_IP" || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      3) zs_set DOMAIN "none"; zs_set SSL_MODE "self-signed"; zs_set LE_EMAIL ""
+         zs_ip_only_warning "$ZS_PUBLIC_IP"; return 0 ;;
       *) cur="$v" ;;
     esac
   done
@@ -203,7 +208,15 @@ zs_print_summary() {
   dom="$(zs_get DOMAIN)"; ssl="$(zs_get SSL_MODE)"
   zs_title "Summary - please check before installing"
   printf '   1) Domain              %s\n' "$([[ "$dom" == none ]] && echo "none (use the server IP)" || echo "$dom")"
-  printf '   2) HTTPS certificate   %s\n' "$([[ "$ssl" == letsencrypt ]] && echo "Let's Encrypt ($(zs_get LE_EMAIL))" || echo "self-signed")"
+  if [[ "$ssl" == letsencrypt && "$(zs_get LE_STAGING)" == yes ]]; then
+    printf '   2) HTTPS certificate   %s\n' "Let's Encrypt STAGING - test certificate, NOT browser-trusted ($(zs_get LE_EMAIL))"
+  elif [[ "$ssl" == letsencrypt ]]; then
+    printf '   2) HTTPS certificate   %s\n' "Let's Encrypt ($(zs_get LE_EMAIL)), renewed automatically"
+  elif [[ "$dom" == none ]]; then
+    printf '   2) HTTPS certificate   %s\n' "self-signed - no domain, browsers show a warning"
+  else
+    printf '   2) HTTPS certificate   %s\n' "self-signed - browsers show a warning"
+  fi
   printf '   3) Admin username      %s\n' "$(zs_get ADMIN_USERNAME)"
   printf '   4) Admin password      %s\n' "$(zs_mask "$(zs_get ADMIN_PASSWORD)")"
   printf '   5) YouTube             %s, key: %s\n' "$(zs_get YT_RTMP_URL)" "$(zs_mask "$(zs_get YT_STREAM_KEY)" "set later in the dashboard")"
@@ -264,6 +277,9 @@ zs_validate_config_answers() {
     [[ "$(zs_get SSL_MODE)" == "letsencrypt" ]] && _cv LE_EMAIL "$(zs_get LE_EMAIL)" zs_valid_email
   fi
   [[ "$(zs_get SSL_MODE)" == "letsencrypt" ]] || zs_set LE_EMAIL ""
+  [[ -z "$(zs_get LE_STAGING)" ]] && zs_set LE_STAGING no
+  zs_set LE_STAGING "$(zs_get LE_STAGING | tr '[:upper:]' '[:lower:]')"
+  _cv LE_STAGING "$(zs_get LE_STAGING)" zs_valid_yes_no
   [[ -z "$(zs_get ADMIN_USERNAME)" ]] && zs_set ADMIN_USERNAME admin
   _cv ADMIN_USERNAME "$(zs_get ADMIN_USERNAME)" zs_valid_username
   v="$(zs_get ADMIN_PASSWORD)"
@@ -297,17 +313,14 @@ zs_validate_config_answers() {
 
 # --config DNS check: a mismatch is a warning that needs ACCEPT_WARNINGS=yes.
 zs_config_dns_check() {
-  local d resolved
+  local d
   d="$(zs_get DOMAIN)"
-  [[ "$d" == "none" ]] && return 0
+  [[ "$d" == "none" ]] && { zs_ip_only_warning "${ZS_PUBLIC_IP:-$(zs_public_ip || true)}"; return 0; }
   [[ -z "$ZS_PUBLIC_IP" ]] && ZS_PUBLIC_IP="$(zs_public_ip || true)"
-  resolved="$(getent ahostsv4 "$d" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
-  if [[ -n "$ZS_PUBLIC_IP" && " $resolved" == *" $ZS_PUBLIC_IP "* ]]; then
-    zs_ok "DNS: ${d} points to this server (${ZS_PUBLIC_IP})."
-    return 0
-  fi
-  zs_warn "DNS: ${d} resolves to '${resolved% }' but this server is ${ZS_PUBLIC_IP:-unknown}."
-  zs_hint "Fix the DNS A record. Let's Encrypt cannot issue a certificate until ${d} points here."
+  if zs_dns_check "$d" "$ZS_PUBLIC_IP"; then zs_dns_explain "$d" "$ZS_PUBLIC_IP"; return 0; fi
+  zs_dns_instructions "$d" "$ZS_PUBLIC_IP"
+  zs_dns_explain "$d" "$ZS_PUBLIC_IP"
+  zs_hint "Let's Encrypt cannot issue a certificate until ${d} points here."
   PF_SOFT=$((PF_SOFT + 1))
   return 1
 }

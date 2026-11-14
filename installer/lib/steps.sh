@@ -31,7 +31,7 @@ zs_step_packages() {
     dbus-user-session dbus-x11 \
     fonts-liberation "$asound" libnss3 libxss1 "$gtk" \
     python3 python3-venv python3-pip websockify openssl \
-    wget curl ca-certificates gnupg ufw jq logrotate git sudo iproute2 psmisc caddy
+    wget curl ca-certificates gnupg ufw jq logrotate git sudo iproute2 psmisc bind9-dnsutils caddy
   local c missing=()
   for c in Xvfb openbox x11vnc xdotool wmctrl ffmpeg ffprobe pactl python3 websockify jq ufw git caddy curl; do
     command -v "$c" >/dev/null || missing+=("$c")
@@ -227,6 +227,7 @@ zs_step_https() {
   if [[ "$(zs_get SSL_MODE)" == "letsencrypt" ]]; then
     args+=(--domain "$(zs_get DOMAIN)")
     [[ -n "$(zs_get LE_EMAIL)" ]] && args+=(--email "$(zs_get LE_EMAIL)")
+    [[ "$(zs_get LE_STAGING)" == "yes" ]] && args+=(--staging)
   fi
   # Ubuntu's caddy package ships a placeholder Caddyfile; replacing it is safe (setup-https.sh keeps a backup).
   # A Caddyfile someone edited by hand is never replaced without the operator's explicit yes.

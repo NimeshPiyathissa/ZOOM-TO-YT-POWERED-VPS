@@ -11,6 +11,7 @@
 #     --fresh         forget the saved answers and progress of an interrupted install and start over
 #     --repo URL      git repository to install from when this script runs outside a clone
 #     --ref REF       branch or tag to check out in that case (default: main)
+#     --staging       get Let's Encrypt STAGING (test) certificates - for repeated test installs; not browser-trusted
 #     --no-color      plain output
 #     -h, --help      this help
 #   Internal (used by update.sh): --upgrade  re-deploy the current checkout on an existing install, no questions.
@@ -29,16 +30,18 @@ ZS_CLONE_DIR="/opt/zoom-stream"
 ZS_MODE="install"
 CONFIG_FILE=""
 FRESH=0
+STAGING=0
 REPO_URL="${ZS_REPO_URL:-$ZS_DEFAULT_REPO}"
 REPO_REF="${ZS_REPO_REF:-$ZS_DEFAULT_REF}"
 ORIG_ARGS=("$@")
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --config) CONFIG_FILE="${2:-}"; [[ -n "$CONFIG_FILE" ]] || { echo "--config needs a file path" >&2; exit 2; }; shift ;;
     --fresh) FRESH=1 ;;
+    --staging) STAGING=1 ;;
     --repo) REPO_URL="${2:-}"; shift ;;
     --ref) REPO_REF="${2:-}"; shift ;;
     --upgrade) ZS_MODE="upgrade" ;;
@@ -91,6 +94,8 @@ fi
 source "$ZS_SRC/installer/lib/common.sh"
 # shellcheck source=installer/lib/validate.sh
 source "$ZS_SRC/installer/lib/validate.sh"
+# shellcheck source=installer/lib/domain.sh
+source "$ZS_SRC/installer/lib/domain.sh"
 # shellcheck source=installer/lib/preflight.sh
 source "$ZS_SRC/installer/lib/preflight.sh"
 # shellcheck source=installer/lib/questions.sh
@@ -284,6 +289,7 @@ fi
 
 if (( RESUMING )); then
   zs_parse_kv_file "$ZS_ANSWERS_FILE" >/dev/null || true
+  (( STAGING )) && zs_set LE_STAGING yes
   zs_title "Resuming the previous installation"
   zs_info "Saved answers from the interrupted run are reused (${ZS_ANSWERS_FILE})."
   zs_info "To start over with new answers instead: sudo bash ${ZS_SRC}/install.sh --fresh"
@@ -308,6 +314,7 @@ elif (( ! INTERACTIVE )); then
     zs_die "Some settings in ${CONFIG_FILE} are not valid (see above). Nothing was changed."
   fi
   zs_validate_config_answers >/dev/null    # again in this shell: the check above ran in a subshell, keep its defaults
+  (( STAGING )) && zs_set LE_STAGING yes
   zs_config_dns_check || true
   zs_print_summary
 else
@@ -316,6 +323,8 @@ else
   fi
   zs_say ""
   zs_say "${C_BOLD}A few questions${C_RESET} (press Enter to accept the value in [brackets])."
+  if (( STAGING )); then zs_set LE_STAGING yes; zs_warn "--staging: Let's Encrypt TEST certificates (not browser-trusted)."
+  else zs_set LE_STAGING no; fi
   zs_ask_all
   if ! zs_summary_loop; then echo "Cancelled - nothing was changed."; exit 1; fi
 fi
@@ -377,6 +386,19 @@ for s in "${STEPS[@]}"; do
 done
 CURRENT_STEP_TITLE=""
 
+# ------------------------------------------------------------------ HTTPS: ports, certificate, the site really loads
+
+[[ -z "$ZS_PUBLIC_IP" ]] && ZS_PUBLIC_IP="$(zs_public_ip || true)"
+zs_title "Checking HTTPS"
+HTTPS_OK=1
+zs_ports_check "$ZS_PUBLIC_IP" "$(zs_get SSL_MODE)" || HTTPS_OK=0
+if [[ "$(zs_get SSL_MODE)" == "letsencrypt" ]]; then
+  if ! zs_dns_check "$(zs_get DOMAIN)" "$ZS_PUBLIC_IP"; then zs_dns_explain "$(zs_get DOMAIN)" "$ZS_PUBLIC_IP"; fi
+  zs_https_verify "$(zs_get DOMAIN)" "$(zs_get LE_STAGING)" || HTTPS_OK=0
+else
+  zs_https_verify_ip "$ZS_PUBLIC_IP" || HTTPS_OK=0
+fi
+
 # ------------------------------------------------------------------ done
 
 zs_scrub_saved_secrets
@@ -388,6 +410,8 @@ chmod 600 "$ZS_INSTALLED_FILE"
   echo "VERSION=$(git -C "$ZS_SRC" describe --tags --always 2>/dev/null || echo unknown)"
   echo "DOMAIN=$(zs_get DOMAIN)"
   echo "SSL_MODE=$(zs_get SSL_MODE)"
+  echo "LE_EMAIL=$(zs_get LE_EMAIL)"
+  echo "LE_STAGING=$(zs_get LE_STAGING)"
   echo "INSTALLED_AT=$(cat "$ZS_INSTALLED_FILE")"
 } >"$ZS_INSTALL_CONF"
 chmod 644 "$ZS_INSTALL_CONF"
@@ -395,8 +419,7 @@ chmod 644 "$ZS_INSTALL_CONF"
 if [[ "$(zs_get DOMAIN)" != "none" ]]; then
   URL="https://$(zs_get DOMAIN)"
 else
-  [[ -z "$ZS_PUBLIC_IP" ]] && ZS_PUBLIC_IP="$(zs_public_ip || echo "<server-ip>")"
-  URL="https://${ZS_PUBLIC_IP}"
+  URL="https://${ZS_PUBLIC_IP:-<server-ip>}"
 fi
 
 zs_title "Installation complete"
@@ -413,10 +436,16 @@ echo
 zs_say "  ${C_BOLD}Dashboard${C_RESET}       ${URL}"
 zs_say "  ${C_BOLD}Sign in as${C_RESET}      $(zs_get ADMIN_USERNAME)  (the password you chose)"
 [[ "$(zs_get SSL_MODE)" == "self-signed" ]] && zs_say "                  Your browser will warn about the self-signed certificate once - accept it."
+[[ "$(zs_get LE_STAGING)" == "yes" ]] && zs_say "                  STAGING certificate (test only, browsers warn). Real one: sudo bash ${ZS_SRC}/set-domain.sh $(zs_get DOMAIN)"
+[[ "$(zs_get DOMAIN)" == "none" ]] && zs_say "                  Add a domain + trusted certificate later: sudo bash ${ZS_SRC}/set-domain.sh stream.example.com"
+if (( ! HTTPS_OK )); then
+  zs_warn "Everything is installed, but HTTPS is not working yet - see 'Checking HTTPS' above for the reason and fix."
+  zs_hint "Then re-check with: sudo bash ${ZS_SRC}/set-domain.sh --check   (guide: docs/domain-and-https.md)"
+fi
 [[ -f "$ZS_CREDENTIALS_FILE" ]] && zs_say "  ${C_BOLD}Generated${C_RESET}       passwords are in ${ZS_CREDENTIALS_FILE} (root only) - store them, then delete the file."
 zs_say "  ${C_BOLD}Settings${C_RESET}        ${ZS_APP_DIR}/.env (stream settings), ${ZS_DASH_HOME}/data (dashboard data, encrypted secrets)"
 zs_say "  ${C_BOLD}Logs${C_RESET}            ${ZS_APP_DIR}/logs/, journalctl -u dashboard, install log ${ZS_LOG_FILE}"
-zs_say "  ${C_BOLD}Tools${C_RESET}           ${ZS_SRC}/{update,backup,restore,doctor,uninstall}.sh"
+zs_say "  ${C_BOLD}Tools${C_RESET}           ${ZS_SRC}/{update,backup,restore,doctor,set-domain,uninstall}.sh"
 echo
 zs_say "  ${C_BOLD}Next steps${C_RESET}"
 zs_say "    1. Open the dashboard and sign in."

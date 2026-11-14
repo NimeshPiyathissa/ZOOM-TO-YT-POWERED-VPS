@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/promo.png" alt="Zoom to YouTube Live Streaming - broadcast console" width="100%">
+  <img src="docs/images/header.png" alt="Zoom to YouTube Live Streaming - broadcast console" width="100%">
 </p>
 
 <h1 align="center">Zoom to YouTube Live Streaming</h1>

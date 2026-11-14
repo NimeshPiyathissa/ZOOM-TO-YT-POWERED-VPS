@@ -6,7 +6,9 @@
 #   setup-https.sh --domain stream.example.com [--email you@example.com]   browser-trusted Let's Encrypt certificate
 #   setup-https.sh                                                           no domain: the installer's self-signed
 #                                                                            certificate, served for https://<vps-ip>
-#   options:  --yes           replace a Caddyfile this script did NOT write (after backing it up) without asking
+#   options:  --staging       use Let's Encrypt's STAGING service (untrusted test certificates, generous rate limits)
+#                             - for repeated test installs; run again without it for a real certificate
+#             --yes           replace a Caddyfile this script did NOT write (after backing it up) without asking
 #             --render-only   print the Caddyfile that would be written and change nothing
 #
 # Safety:
@@ -29,14 +31,16 @@ CERT_DIR="${CADDY_DIR}/zoom-stream"
 MARKER="# managed-by: zoom-stream setup-https.sh"
 UPSTREAM="127.0.0.1:8000"
 
-DOMAIN="" EMAIL="" YES=0 RENDER_ONLY=0
+DOMAIN="" EMAIL="" YES=0 RENDER_ONLY=0 STAGING=0
+STAGING_CA="https://acme-staging-v02.api.letsencrypt.org/directory"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --domain) DOMAIN="${2:-}"; shift ;;
     --email) EMAIL="${2:-}"; shift ;;
     --yes) YES=1 ;;
+    --staging) STAGING=1 ;;
     --render-only) RENDER_ONLY=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "setup-https: unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -59,7 +63,12 @@ render() {
   echo "# Generated $(date -u +%Y-%m-%dT%H:%M:%SZ). Re-run setup-https.sh to change it; manual edits are kept only if"
   echo "# you remove the marker line above (the script then refuses to overwrite the file without --yes)."
   if [[ -n "$DOMAIN" ]]; then
-    if [[ -n "$EMAIL" ]]; then printf '{\n\temail %s\n}\n\n' "$EMAIL"; fi
+    if [[ -n "$EMAIL" ]] || (( STAGING )); then
+      echo "{"
+      if [[ -n "$EMAIL" ]]; then printf '\temail %s\n' "$EMAIL"; fi
+      if (( STAGING )); then printf '\tacme_ca %s\n' "$STAGING_CA"; fi
+      printf '}\n\n'
+    fi
     echo "${DOMAIN} {"
   else
     # No domain: serve the installer's self-signed certificate for whatever address the browser used (the VPS IP).
@@ -163,7 +172,9 @@ else
   systemctl start caddy
 fi
 
-if [[ -n "$DOMAIN" ]]; then
+if [[ -n "$DOMAIN" ]] && (( STAGING )); then
+  say "HTTPS configured: https://$DOMAIN with Let's Encrypt STAGING (test certificate - browsers will NOT trust it)."
+elif [[ -n "$DOMAIN" ]]; then
   say "HTTPS configured: https://$DOMAIN (Let's Encrypt, renewed automatically by Caddy)."
 else
   say "HTTPS configured with the self-signed certificate: https://<vps-ip> (browsers warn once)."

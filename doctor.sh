@@ -9,6 +9,8 @@ set -uo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=installer/lib/common.sh
 source "$SRC/installer/lib/common.sh"
+# shellcheck source=installer/lib/domain.sh
+source "$SRC/installer/lib/domain.sh"
 
 CHECK_UPDATES=0
 case "${1:-}" in
@@ -92,12 +94,25 @@ else prob "Dashboard does not answer on 127.0.0.1:8000" "sudo systemctl restart 
 domain="$(conf DOMAIN)"
 if [[ -n "$domain" && "$domain" != "none" ]]; then
   ip="$(zs_public_ip || true)"
-  resolved="$(getent ahostsv4 "$domain" | awk '{print $1}' | sort -u | tr '\n' ' ')"
-  if [[ -n "$ip" && " $resolved" == *" $ip "* ]]; then pass "DNS: $domain -> $ip"
-  else prob "DNS: $domain points to '${resolved% }', this server is ${ip:-unknown}" "Update the DNS A record; HTTPS certificates cannot renew until it points here."; fi
-  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 --resolve "$domain:443:127.0.0.1" "https://$domain/login" 2>/dev/null || true)"
-  if [[ "$code" =~ ^(200|302|303|307)$ ]]; then pass "HTTPS works with a trusted certificate (https://$domain)"
-  else prob "HTTPS for $domain is not working (result: ${code:-no answer})" "Caddy log: sudo journalctl -u caddy -n 50 --no-pager" "Port 80 and 443 must be open for Let's Encrypt."; fi
+  if zs_dns_check "$domain" "$ip"; then pass "DNS: $domain -> $ip"
+  else
+    zs_dns_explain "$domain" "$ip"; PROBLEMS=$((PROBLEMS + 1))
+    zs_hint "HTTPS certificates cannot be issued or renewed until it points here. Guide: docs/domain-and-https.md"
+  fi
+  if [[ "$(conf LE_STAGING)" == "yes" ]]; then
+    warn "Let's Encrypt STAGING is configured: a test certificate that browsers do not trust" \
+         "For a real certificate: sudo bash $SRC/set-domain.sh $domain"
+    code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 8 --resolve "$domain:443:127.0.0.1" "https://$domain/login" 2>/dev/null || true)"
+  else
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 --resolve "$domain:443:127.0.0.1" "https://$domain/login" 2>/dev/null || true)"
+  fi
+  if [[ "$code" =~ ^(200|302|303|307)$ ]]; then pass "HTTPS works (https://$domain)"
+  else
+    why="$(zs_explain_cert_error "$(journalctl -u caddy --since '-2 days' --no-pager -o cat 2>/dev/null | tail -n 300)" || true)"
+    prob "HTTPS for $domain is not working (result: ${code:-no answer})" \
+         "${why:-Caddy log: sudo journalctl -u caddy -n 50 --no-pager}" \
+         "Ports 80 and 443 must be open for Let's Encrypt. Re-check: sudo bash $SRC/set-domain.sh --check"
+  fi
   end="$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$domain" 2>/dev/null | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)"
   if [[ -n "$end" ]]; then
     days=$(( ($(date -d "$end" +%s) - $(date +%s)) / 86400 ))
@@ -110,8 +125,12 @@ else
   else prob "HTTPS on port 443 is not answering (result: ${code:-no answer})" "sudo systemctl restart caddy; log: sudo journalctl -u caddy -n 50 --no-pager"; fi
 fi
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-  if ufw status 2>/dev/null | grep -qE '^443(/tcp)?\s+ALLOW'; then pass "Firewall allows HTTPS (443)" \
+  if ufw status 2>/dev/null | grep -qE '^443(/tcp)?\s+ALLOW'; then pass "Firewall allows HTTPS (443)"
   else prob "Firewall is on but blocks HTTPS" "Fix: sudo ufw allow 443/tcp"; fi
+  if [[ -n "$domain" && "$domain" != "none" ]]; then
+    if ufw status 2>/dev/null | grep -qE '^80(/tcp)?\s+ALLOW'; then pass "Firewall allows HTTP (80) for certificate renewal"
+    else prob "Firewall is on but blocks port 80 (Let's Encrypt needs it)" "Fix: sudo ufw allow 80/tcp"; fi
+  fi
 else
   zs_info "Firewall (ufw) is off"
 fi

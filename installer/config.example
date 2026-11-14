@@ -5,13 +5,18 @@
 # Every value is validated exactly like the interactive questions; nothing is installed if one is invalid.
 # Delete the file after the install - the installer does not need it again.
 
-# Domain for the dashboard (its DNS A record must point to this server), or "none" to use the server's IP.
+# Domain (usually a subdomain such as stream.example.com) for the dashboard, or "none" to use the server's IP only.
+# Create its DNS A record first: Name = stream, Value = this server's public IPv4 address (guide:
+# docs/domain-and-https.md). The installer checks the record; a mismatch counts as a warning (see ACCEPT_WARNINGS).
 DOMAIN=none
 
 # HTTPS certificate when DOMAIN is set: "letsencrypt" (free, trusted; needs ports 80+443) or "self-signed".
 SSL_MODE=letsencrypt
 # E-mail for Let's Encrypt expiry notices (required with SSL_MODE=letsencrypt).
 LE_EMAIL=
+# yes = use Let's Encrypt's STAGING service: untrusted TEST certificates with generous rate limits, for repeated
+# test installs only. Switch to a real certificate later with: sudo bash /opt/zoom-stream/set-domain.sh <domain>
+LE_STAGING=no
 
 # Dashboard sign-in. Password: 12+ characters mixing letters, digits and symbols (or 16+ characters).
 ADMIN_USERNAME=admin
