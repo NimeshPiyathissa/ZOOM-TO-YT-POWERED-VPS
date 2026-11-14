@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-14
+
+### Changed
+- Repository renamed to `NimeshPiyathissa/ZOOM-TO-YT-POWERED-VPS`; installer, README, docs and issue templates use
+  the new URL (GitHub redirects the old one).
+
+### Fixed
+- CI: five `A && B || true` shell lines are explicit `if` statements (shellcheck SC2015 on shellcheck 0.9.0).
+- Tests pass on Linux CI: stand-in `zoombot`/`dashboard` accounts when they do not exist, RGB test pictures so
+  ffmpeg 6.1 keeps odd heights, and no real X display query in the capture-framing test.
+
 ## [1.0.0] - 2026-11-14
 
 First public release.

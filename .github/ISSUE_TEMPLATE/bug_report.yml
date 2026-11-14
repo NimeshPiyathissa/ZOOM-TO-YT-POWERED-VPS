@@ -12,7 +12,7 @@ body:
     attributes:
       label: Version
       description: Output of `git -C /opt/zoom-stream describe --tags`
-      placeholder: v1.0.0
+      placeholder: v1.0.1
     validations:
       required: true
   - type: dropdown
