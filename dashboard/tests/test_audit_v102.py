@@ -368,3 +368,51 @@ def test_ci_actions_run_on_a_supported_node_runtime():
     setup_py = [int(v) for v in re.findall(r"actions/setup-python@v(\d+)", wf)]
     assert checkout and min(checkout) >= 5, "actions/checkout below v5 runs on the deprecated Node 20"
     assert setup_py and min(setup_py) >= 6, "actions/setup-python below v6 runs on the deprecated Node 20"
+
+
+# ------------------------------------------------------------------ Caddy from its official apt repository
+
+CADDY_KEY = REPO / "dashboard" / "tests" / "fixtures" / "caddy-stable-pubkey.asc"
+needs_gpg = pytest.mark.skipif(BASH is None or shutil.which("gpg") is None, reason="bash/gpg not available")
+
+
+def _caddy_repo(tmp_path, key_file):
+    body = (f'zs_download() {{ cp "{_posix(key_file)}" "$2"; }}\n'
+            'zs_add_caddy_repo; echo "RC1=$?"\nzs_add_caddy_repo; echo "RC2=$?"\n')
+    env = {"ZS_APT_DIR": _posix(tmp_path / "apt"), "ZS_KEYRING_DIR": _posix(tmp_path / "keyrings")}
+    return _bash(tmp_path, body, env, libs=("common", "validate", "steps"))
+
+
+@needs_gpg
+def test_caddy_repo_is_added_with_the_published_signing_key(tmp_path):
+    r = _caddy_repo(tmp_path, CADDY_KEY)
+    assert "RC1=0" in r.stdout and "RC2=0" in r.stdout, r.stdout + r.stderr
+    assert "already configured" in r.stdout                           # the second run changes nothing
+    keyring = tmp_path / "keyrings" / "caddy-stable-archive-keyring.gpg"
+    lines = [ln for ln in (tmp_path / "apt" / "sources.list.d" / "caddy-stable.list").read_text().splitlines()
+             if ln and not ln.startswith("#")]
+    assert keyring.stat().st_size > 500
+    assert lines == [f"deb [signed-by={_posix(keyring)}] https://dl.cloudsmith.io/public/caddy/stable/deb/debian "
+                     "any-version main"]
+
+
+@needs_gpg
+def test_caddy_repo_is_not_added_when_the_key_is_wrong_or_missing(tmp_path):
+    bad = tmp_path / "bad.key"
+    bad.write_text("-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nnot a key\n-----END PGP PUBLIC KEY BLOCK-----\n")
+    r = _caddy_repo(tmp_path, bad)
+    assert "RC1=1" in r.stdout and "RC2=1" in r.stdout
+    assert not (tmp_path / "apt").exists() and not (tmp_path / "keyrings").exists()
+    r = _bash(tmp_path, 'zs_download() { return 1; }\nzs_add_caddy_repo; echo "RC=$?"',
+              {"ZS_APT_DIR": _posix(tmp_path / "apt"), "ZS_KEYRING_DIR": _posix(tmp_path / "keyrings")},
+              libs=("common", "validate", "steps"))
+    assert "RC=1" in r.stdout and not (tmp_path / "apt").exists()
+
+
+def test_package_step_falls_back_to_ubuntus_caddy_and_uninstall_removes_the_repo():
+    steps = _read("installer/lib/steps.sh")
+    pkg = steps[steps.index("zs_step_packages() {"):steps.index("# ------------------------------------------------------------------ 2.")]
+    assert pkg.index("zs_add_caddy_repo") < pkg.index("zs_apt install --no-install-recommends \\")
+    assert "using Ubuntu's caddy package" in pkg                     # never fatal
+    un = _read("uninstall.sh")
+    assert "caddy-stable.list" in un and "caddy-stable-archive-keyring.gpg" in un

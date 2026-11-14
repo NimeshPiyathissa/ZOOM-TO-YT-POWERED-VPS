@@ -123,6 +123,7 @@ fi
 if (( REMOVE_PKGS )); then
   DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 -y purge zoom google-chrome-stable caddy >/dev/null 2>&1 || true
   rm -f /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
+  rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   zs_ok "Zoom, Google Chrome and Caddy removed"
 fi
 

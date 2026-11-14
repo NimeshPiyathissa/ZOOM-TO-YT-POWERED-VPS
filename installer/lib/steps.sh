@@ -18,8 +18,44 @@ _pick_pkg() { local p; for p in "$@"; do apt-cache show "$p" &>/dev/null && { ec
 
 # ------------------------------------------------------------------ 1. system packages
 
+# Caddy's own apt repository (https://caddyserver.com/docs/install): the current stable Caddy with upstream security
+# fixes. Ubuntu 24.04's "universe" package is Caddy 2.6.2 (2022), which nobody patches upstream any more.
+# Test hooks (never set in production): ZS_APT_DIR (default /etc/apt), ZS_KEYRING_DIR (default /usr/share/keyrings).
+ZS_CADDY_KEY_URL="https://dl.cloudsmith.io/public/caddy/stable/gpg.key"
+ZS_CADDY_REPO_URL="https://dl.cloudsmith.io/public/caddy/stable/deb/debian"
+ZS_CADDY_KEY_FPR="65760C51EDEA2017CEA2CA15155B6D79CA56EA34"
+
+# zs_add_caddy_repo - returns 0 when the repository is configured, 1 when it could not be (network, or the signing key
+# is not the expected one). Never fatal: the caller then installs Ubuntu's own caddy package instead.
+zs_add_caddy_repo() {
+  local keyring="${ZS_KEYRING_DIR:-/usr/share/keyrings}/caddy-stable-archive-keyring.gpg"
+  local list="${ZS_APT_DIR:-/etc/apt}/sources.list.d/caddy-stable.list" tmp fpr
+  if [[ -s "$keyring" && -s "$list" ]]; then echo "caddy: official apt repository already configured"; return 0; fi
+  tmp="$(mktemp -d)"
+  if ! zs_download "$ZS_CADDY_KEY_URL" "$tmp/key.asc"; then rm -rf "$tmp"; return 1; fi
+  # Only the key with the published fingerprint is trusted - not whatever the download happened to return.
+  fpr="$(gpg --batch --no-default-keyring --homedir "$tmp" --show-keys --with-colons "$tmp/key.asc" 2>/dev/null \
+    | awk -F: '$1 == "fpr" {print $10; exit}')" || fpr=""
+  if [[ "$fpr" != "$ZS_CADDY_KEY_FPR" ]]; then
+    echo "caddy: the downloaded signing key is not the expected one (${fpr:-unreadable}) - not adding the repository"
+    rm -rf "$tmp"; return 1
+  fi
+  if ! gpg --batch --no-default-keyring --homedir "$tmp" --dearmor -o "$tmp/key.gpg" "$tmp/key.asc" 2>/dev/null; then
+    rm -rf "$tmp"; return 1
+  fi
+  install -D -m 644 "$tmp/key.gpg" "$keyring"
+  printf '# Caddy stable - added by the zoom-stream installer (https://caddyserver.com/docs/install)\ndeb [signed-by=%s] %s any-version main\n' \
+    "$keyring" "$ZS_CADDY_REPO_URL" >"$tmp/list"
+  install -D -m 644 "$tmp/list" "$list"
+  rm -rf "$tmp"
+  echo "caddy: official apt repository added"
+}
+
 zs_step_packages() {
   zs_apt update
+  zs_apt install --no-install-recommends curl ca-certificates gnupg
+  if zs_add_caddy_repo; then zs_apt update
+  else echo "caddy: official repository unavailable - using Ubuntu's caddy package"; fi
   local asound gtk
   asound="$(_pick_pkg libasound2t64 libasound2)"
   gtk="$(_pick_pkg libgtk-3-0t64 libgtk-3-0)"
@@ -42,6 +78,7 @@ zs_step_packages() {
   _record_version ffmpeg "$(ffmpeg -version | head -n1 | awk '{print $3}')"
   _record_version python3 "$(python3 -c 'import sys; print(sys.version.split()[0])')"
   _record_version caddy "$(caddy version 2>/dev/null | awk '{print $1}')"
+  _record_version caddy-source "$(apt-cache policy caddy 2>/dev/null | grep -q cloudsmith && echo official || echo ubuntu)"
 }
 
 # ------------------------------------------------------------------ 2. Google Chrome (official .deb, adds Google's apt repo)
