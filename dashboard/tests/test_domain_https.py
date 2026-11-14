@@ -502,3 +502,26 @@ def test_doctor_accepts_no_color_like_the_other_tools():
     r = subprocess.run([BASH, _posix(REPO / "doctor.sh"), "--bogus"], capture_output=True, text=True,
                        timeout=30, stdin=subprocess.DEVNULL)
     assert r.returncode != 0 and "Unknown option: --bogus" in r.stdout + r.stderr
+
+
+@needs_bash
+@pytest.mark.parametrize("answer, expected", [
+    ("2400:8901::2000:2aff:fe77:7fd8", ""),          # an IPv6 answer is never used as "this server's IP"
+    ("198.51.100.20", "198.51.100.20"),
+])
+def test_setup_https_dns_check_compares_ipv4_only(tmp_path, answer, expected):
+    # Found on the v1.0.0 test server (dual-stack Linode): the DNS sanity check compared the A record with the
+    # server's IPv6 address and printed a false "resolves to <ipv4> but this server is <ipv6>" warning.
+    text = (REPO / "scripts" / "setup-https.sh").read_text(encoding="utf-8")
+    func = re.search(r"^_public_ipv4\(\) \{.*?^\}", text, re.S | re.M).group(0)
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    curl = fakebin / "curl"
+    # Answers IPv6 unless forced to IPv4 with -4, like a real IP-echo service on a dual-stack server.
+    curl.write_text('#!/usr/bin/env bash\n[[ " $* " == *" -4 "* ]] && echo "$FAKE_V4" || echo "2400:8901::1"\n',
+                    encoding="utf-8", newline="\n")
+    curl.chmod(0o755)
+    env = dict(os.environ, PATH=_posix(fakebin) + ":" + os.environ.get("PATH", ""), FAKE_V4=answer)
+    r = subprocess.run([BASH, "-c", func + '\nprintf "IP=[%s]" "$(_public_ipv4)"'], capture_output=True, text=True,
+                       timeout=30, env=env, stdin=subprocess.DEVNULL)
+    assert f"IP=[{expected}]" in r.stdout, r.stdout + r.stderr

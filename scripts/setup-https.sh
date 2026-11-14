@@ -109,8 +109,19 @@ if ! command -v caddy >/dev/null 2>&1; then
 fi
 
 # ---- DNS sanity check (warning only: Let's Encrypt needs the name to point at this server)
+# _public_ipv4 - this server's public IPv4 address, or nothing. Forced to IPv4: on dual-stack servers (e.g. Linode,
+# Hetzner) an IP-echo service answers with the IPv6 address, which can never match the domain's A record.
+_public_ipv4() {
+  local url ip
+  for url in https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
+    ip="$(curl -4 -fsS --max-time 4 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    if [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then printf '%s' "$ip"; return 0; fi
+  done
+  return 0
+}
+
 if [[ -n "$DOMAIN" ]]; then
-  PUBLIC_IP="$(curl -s --max-time 4 https://ifconfig.me || true)"
+  PUBLIC_IP="$(_public_ipv4)"
   RESOLVED="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')"
   if [[ -z "$RESOLVED" ]]; then
     say "WARNING: $DOMAIN does not resolve yet. Point its DNS A record at ${PUBLIC_IP:-this server}; Caddy will"
