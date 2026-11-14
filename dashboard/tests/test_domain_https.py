@@ -211,6 +211,17 @@ def test_dns_wait_gives_up_with_an_explanation(sh):
 
 
 @needs_bash
+def test_dns_gate_wait_timeout_explains_once(sh):
+    # Found on the v1.0.0 test server: after [w] timed out the explanation was printed twice.
+    r = sh(f'zs_dns_gate stream.example.com {SERVER_IP}; echo "RC=$?"', libs=("common", "validate", "domain"),
+           tty=["w", "n"], FAKE_A="", ZS_DNS_WAIT_MAX="2")
+    assert "RC=3" in r.stdout, r.stdout + r.stderr
+    assert "Still not pointing here" in r.stdout
+    after = r.stdout.split("Still not pointing here", 1)[1]
+    assert after.count("has no A record yet") == 1, after
+
+
+@needs_bash
 @pytest.mark.parametrize("answers, seq, rc", [
     (["r"], f"198.51.100.9|{SERVER_IP}", 0),        # re-check after fixing the record
     (["w"], f"|||{SERVER_IP}", 0),                  # wait for propagation

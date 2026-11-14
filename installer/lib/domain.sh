@@ -11,7 +11,8 @@
 #   zs_explain_cert_error TEXT      turn Caddy / Let's Encrypt errors into one plain sentence
 #
 # Test hooks (never set in production): ZS_DNS_RESOLVERS (default "1.1.1.1 8.8.8.8"), ZS_SLEEP (default sleep),
-# ZS_HTTPS_WAIT (seconds to wait for a certificate, default 180), ZS_DNS_POLL (seconds between DNS checks, default 15).
+# ZS_HTTPS_WAIT (seconds to wait for a certificate, default 180), ZS_DNS_POLL (seconds between DNS checks, default 15),
+# ZS_DNS_WAIT_MAX (how long [w] in the DNS menu waits, default 600).
 
 ZS_DNS_STATE="" ZS_DNS_A="" ZS_DNS_AAAA=""
 
@@ -185,20 +186,22 @@ zs_dns_wait() {
 # zs_dns_gate DOMAIN IP - interactive DNS step. Returns 0 = DNS OK (or user chose to continue anyway),
 # 2 = user wants to type another name, 3 = user chose no domain (IP-only).
 zs_dns_gate() {
-  local d="$1" ip="$2" choice
+  local d="$1" ip="$2" choice explained=0 max="${ZS_DNS_WAIT_MAX:-600}"
   zs_dns_instructions "$d" "$ip"
   zs_info "Checking DNS for ${d}..."
   while true; do
     if zs_dns_check "$d" "$ip"; then zs_dns_explain "$d" "$ip"; return 0; fi
-    zs_dns_explain "$d" "$ip"
+    # After a timed-out [w] the explanation was just printed by zs_dns_wait: do not repeat it.
+    (( explained )) || zs_dns_explain "$d" "$ip"
+    explained=0
     zs_say ""
-    zs_say "    [w] wait - re-check automatically every ${ZS_DNS_POLL:-15}s for up to 10 minutes (DNS can take a while)"
+    zs_say "    [w] wait - re-check automatically every ${ZS_DNS_POLL:-15}s for up to $((max / 60)) minutes (DNS can take a while)"
     zs_say "    [r] re-check now          [e] enter a different name"
     zs_say "    [c] continue anyway       (the certificate is requested once DNS points here)"
     zs_say "    [n] no domain             (IP address only, self-signed certificate)"
     zs_read choice "  Choose [w/r/e/c/n]: "
     case "${choice,,}" in
-      w|"") zs_dns_wait "$d" "$ip" 600 && return 0 ;;
+      w|"") zs_dns_wait "$d" "$ip" "$max" && return 0; explained=1 ;;
       r) zs_info "Checking DNS for ${d}..." ;;
       e) return 2 ;;
       c) zs_warn "Continuing although ${d} does not point here yet."; return 0 ;;
