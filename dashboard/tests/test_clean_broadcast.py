@@ -511,5 +511,18 @@ def test_output_preset_changes_only_the_encoder_and_pins_the_screen_size(api, mo
     assert written == [{"RESOLUTION": "1280x720", "FPS": "30", "VIDEO_BITRATE": "4000", "X264_PRESET": "veryfast",
                         "DISPLAY_SIZE": "1920x1080"}]
     assert r["ok"] and api.st["unit_calls"] == []
+    assert r["upscaled"] is False and "enlarged" not in r["message"]      # 1080p screen -> 720p output: nothing to warn about
     assert api.post("/api/output/preset", json={"preset": "8k"}, headers=api.csrf).status_code == 400
     assert api.post("/api/output/preset", json={"preset": "720p30-light"}).status_code == 403
+
+
+def test_output_preset_says_so_when_the_output_is_larger_than_the_virtual_screen(api, monkeypatch):
+    """A fresh install has a 1280x720 screen: a 1080p preset then only enlarges it. The answer must say that."""
+    written = []
+    monkeypatch.setattr(env_store, "read_parsed", lambda: {"RESOLUTION": "1280x720", "DISPLAY_SIZE": "1280x720"})
+    monkeypatch.setattr(env_store, "write_updates", lambda u: written.append(dict(u)) or [])
+    r = api.post("/api/output/preset", json={"preset": "1080p30-quality"}, headers=api.csrf).json()
+    assert r["ok"] and r["upscaled"] is True and r["screen"] == "1280x720"
+    assert "1280x720" in r["message"] and "enlarged" in r["message"] and "docs/configuration.md" in r["message"]
+    assert "DISPLAY_SIZE" not in written[0]                               # an existing screen size is never overwritten
+    assert api.st["unit_calls"] == []                                     # and nothing is restarted

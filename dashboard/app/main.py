@@ -463,9 +463,18 @@ async def api_output_preset(request: Request):
     pending = await run_in_threadpool(control.encoder_filter_stale)
     db.audit(session["username"], "output_preset", f"{key} {updates} replanned={replanned} pending_restart={pending}",
              deps.client_ip(request))
+    message = ("Saved. The live stream keeps its current settings until an authorized restart."
+               if pending else "Saved: the next Go Live uses these settings.")
+    # Honest about what a bigger output can and cannot do: the encoder only enlarges what the virtual screen shows.
+    screen = (current.get("DISPLAY_SIZE") or "").strip() or updates.get("DISPLAY_SIZE") or display or ""
+    screen_wh, out_wh = fullscreen_live.parse_size(screen), fullscreen_live.parse_size(updates["RESOLUTION"])
+    upscaled = bool(screen_wh and out_wh and out_wh[0] * out_wh[1] > screen_wh[0] * screen_wh[1])
+    if upscaled:
+        message += (f" Note: the virtual screen is {screen}, so {updates['RESOLUTION']} output is an enlarged copy of it,"
+                    " not a sharper picture. For a true full-size picture see 'Virtual screen size' in"
+                    " docs/configuration.md.")
     return {"ok": True, "preset": key, "applied": updates, "replanned": replanned, "pending_restart": pending,
-            "message": ("Saved. The live stream keeps its current settings until an authorized restart."
-                        if pending else "Saved: the next Go Live uses these settings.")}
+            "upscaled": upscaled, "screen": screen, "message": message}
 
 
 @app.get("/config", response_class=HTMLResponse)

@@ -37,6 +37,24 @@ under the hood.
 | `DISPLAY_NUM`, `DISPLAY_SIZE` | Virtual screen (advanced) | edit `.env` |
 | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Notifications (token is secret) | Settings |
 
+### Virtual screen size
+
+The bot's screen (what Zoom and Chrome draw on) is created when the services start, at the size of `RESOLUTION` -
+1280x720 on a default install. The Output page changes only what the **encoder** sends; it never resizes the screen,
+because that would restart Zoom and Chrome. So after choosing a 1080p preset on a 720p install the stream is
+1920x1080, but it is an enlarged copy of a 1280x720 screen (the Output page says so). For a true 1080p picture:
+
+1. Stop the broadcast.
+2. Choose the 1080p preset on the Output page.
+3. Clear the pinned screen size and restart the services (a reboot does the same):
+
+```bash
+sudo -u zoombot sed -i 's/^DISPLAY_SIZE=.*/DISPLAY_SIZE=""/' /home/zoombot/zoom-stream/.env
+sudo reboot
+```
+
+The screen then follows `RESOLUTION` again. 1080p needs noticeably more CPU - make a test recording first.
+
 Editing by hand:
 
 ```bash
