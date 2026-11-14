@@ -118,7 +118,7 @@ Let's Encrypt and your browser must be able to reach the server on:
   anywhere (`0.0.0.0/0`):
   - AWS EC2: *Security group > Inbound rules* · Lightsail: *Networking > IPv4 Firewall*
   - Google Cloud: *VPC network > Firewall* · Azure: *Network security group* · Oracle: *Security list*
-  - DigitalOcean / Hetzner / Vultr: *Cloud firewall* (only if you created one)
+  - DigitalOcean / Hetzner / Vultr / Linode (Akamai): *Cloud firewall* (only if you created one)
 
 ## 7. Run the installer wizard
 

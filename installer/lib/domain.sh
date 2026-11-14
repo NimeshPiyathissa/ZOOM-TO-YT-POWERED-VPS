@@ -249,7 +249,7 @@ zs_ports_check() {
     zs_warn "Port(s) ${blocked[*]} could not be reached on ${ip} from this server."
     zs_hint "Open TCP ${blocked[*]} for everyone (0.0.0.0/0) in your provider's firewall: AWS 'Security group inbound"
     zs_hint "rules', Google Cloud 'VPC firewall', Azure 'Network security group', Oracle 'Security list',"
-    zs_hint "DigitalOcean/Hetzner/Vultr 'Cloud firewall'. (Some providers block this self-test even when the port is open.)"
+    zs_hint "DigitalOcean/Hetzner/Vultr/Linode 'Cloud firewall'. (Some providers block this self-test even when the port is open.)"
   fi
   return 0
 }
