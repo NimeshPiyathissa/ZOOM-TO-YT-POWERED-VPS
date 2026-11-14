@@ -56,7 +56,7 @@ mkdir -p "$LOG_DIR"
 chrome_version() { "$CHROME_BIN" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | head -n1; }
 ua() { echo "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$(chrome_version | cut -d. -f1).0.0.0 Safari/537.36"; }
 
-signin_pid() { [[ -f "$PIDFILE" ]] && cat "$PIDFILE" 2>/dev/null || true; }
+signin_pid() { if [[ -f "$PIDFILE" ]]; then cat "$PIDFILE" 2>/dev/null || true; fi; }
 signin_running() { local p; p="$(signin_pid)"; [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; }
 
 # Chrome leaves a SingletonLock symlink (target "host-pid") while any
@@ -78,7 +78,7 @@ close_signin() {
     # SIGTERM lets Chrome flush cookies/session to disk; only escalate if
     # it genuinely hangs.
     for _ in $(seq 1 40); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done
-    kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null || true
+    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
   fi
   rm -f "$PIDFILE"
 }
@@ -154,7 +154,7 @@ diagnose_launch_failure() {
     # the first.
     kill -TERM "$p" 2>/dev/null || true
     for _ in $(seq 1 20); do kill -0 "$p" 2>/dev/null || break; sleep 0.25; done
-    kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null || true
+    if kill -0 "$p" 2>/dev/null; then kill -KILL "$p" 2>/dev/null || true; fi
   else
     echo "Chrome exited immediately after launch - see $LOG_DIR/accounts.log for the reason (profile corruption, missing libs, disk full)" >&2
   fi

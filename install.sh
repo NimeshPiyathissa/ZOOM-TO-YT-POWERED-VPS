@@ -139,7 +139,7 @@ trap 'on_unexpected_error $? $LINENO' ERR
 
 on_interrupt() {
   trap - INT TERM ERR
-  [[ -n "$STEP_PID" ]] && kill "$STEP_PID" 2>/dev/null || true
+  if [[ -n "$STEP_PID" ]]; then kill "$STEP_PID" 2>/dev/null || true; fi
   echo >&2
   zs_warn "Installation interrupted${CURRENT_STEP_TITLE:+ during step ${CURRENT_STEP_NO}/${STEP_TOTAL} (${CURRENT_STEP_TITLE})}."
   zs_hint "Nothing is lost: run the installer again and it resumes from this step with your saved answers."

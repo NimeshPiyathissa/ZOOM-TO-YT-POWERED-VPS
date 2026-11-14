@@ -91,7 +91,7 @@ for stray in "$PROFILE_DIR/.window.pid" "$PROFILE_DIR/.signin.pid"; do
     log "Closing stray Chrome window (pid $SP) holding $PROFILE_DIR before starting the kiosk"
     kill -TERM "$SP" 2>/dev/null || true
     for _ in $(seq 1 40); do kill -0 "$SP" 2>/dev/null || break; sleep 0.25; done
-    kill -0 "$SP" 2>/dev/null && kill -KILL "$SP" 2>/dev/null || true
+    if kill -0 "$SP" 2>/dev/null; then kill -KILL "$SP" 2>/dev/null || true; fi
   fi
   rm -f "$stray"
 done
