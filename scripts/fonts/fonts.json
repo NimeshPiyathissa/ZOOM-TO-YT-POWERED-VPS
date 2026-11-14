@@ -1,0 +1,734 @@
+{
+ "version": 1,
+ "fonts": [
+  {
+   "key": "anton",
+   "family": "Anton",
+   "file": "anton.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 130324,
+   "sha256": "fd9301f2837c99df2be07cc7f0be66e9470f5354d8fcf1606027c67fcd637a53"
+  },
+  {
+   "key": "bebas-neue",
+   "family": "Bebas Neue",
+   "file": "bebas-neue.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 56136,
+   "sha256": "939fea723dad24504f40faadc34eeffadfbbee558754f70c3c736e13786b0ab6"
+  },
+  {
+   "key": "teko",
+   "family": "Teko",
+   "file": "teko.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 153772,
+   "sha256": "111cb8a4203f62dd7b672299dce955597b8f8cd15f66f8de1bc240950be06e7d"
+  },
+  {
+   "key": "archivo-black",
+   "family": "Archivo Black",
+   "file": "archivo-black.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 87996,
+   "sha256": "355b89d43e95edd50a58dad2029689c56027ef19cf9f2f03c9d3605e87ee182e"
+  },
+  {
+   "key": "russo-one",
+   "family": "Russo One",
+   "file": "russo-one.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 36816,
+   "sha256": "7a022de179a466ad9711d5f2848123c5cba6eedf22e51a8dc04ed6e5d64b205d"
+  },
+  {
+   "key": "righteous",
+   "family": "Righteous",
+   "file": "righteous.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 40364,
+   "sha256": "82e2ac84900128219615a1e3a986a1821409e727e2bdb67714b2dcfe4447b946"
+  },
+  {
+   "key": "bungee",
+   "family": "Bungee",
+   "file": "bungee.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 110456,
+   "sha256": "ff0ad5d7496a911460625f9052ea50b05e289065be71a1cb21c71896585224d2"
+  },
+  {
+   "key": "alfa-slab-one",
+   "family": "Alfa Slab One",
+   "file": "alfa-slab-one.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 91272,
+   "sha256": "0e834ddadca6dc95b5502c01f8911b7a77f50a350ac7400a6e2d9a3bfb1cd02f"
+  },
+  {
+   "key": "black-han-sans",
+   "family": "Black Han Sans",
+   "file": "black-han-sans.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 979200,
+   "sha256": "4f74b64509a3916eafd273f1fc37ea2bde6de89068b8d2d064d13c5e72507eb9"
+  },
+  {
+   "key": "titan-one",
+   "family": "Titan One",
+   "file": "titan-one.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 52188,
+   "sha256": "c14c958677babb78649790ac2e998cea5cb940710aeb044e308cd79ee74a95bd"
+  },
+  {
+   "key": "bangers",
+   "family": "Bangers",
+   "file": "bangers.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 91216,
+   "sha256": "a5ad3f06658ecd92705c3499cf000ff5b0c0c6f49641f7b3a6531dcee4bdb4c0"
+  },
+  {
+   "key": "squada-one",
+   "family": "Squada One",
+   "file": "squada-one.ttf",
+   "category": "High-Impact & Broadcast Titles",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 17224,
+   "sha256": "631619cacbd7feae90e34ddb4ab9b16e865c33ab76dc9dfd1a81c338ef1f4d92"
+  },
+  {
+   "key": "montserrat",
+   "family": "Montserrat",
+   "file": "montserrat.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 180068,
+   "sha256": "84f3d3275dfb159dd311c61828fd754a82ec31c377120518e2cd3e7d34394e96"
+  },
+  {
+   "key": "poppins",
+   "family": "Poppins",
+   "file": "poppins.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 154628,
+   "sha256": "cdedb1729acac414ed01744a11da7badb86adf13108e7bd3fa161b9323f7fe54"
+  },
+  {
+   "key": "roboto",
+   "family": "Roboto",
+   "file": "roboto.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 123720,
+   "sha256": "dece7c71bbe61710787f0839c722c65e87355dd2eb4a823e6b5488121ff81e4b"
+  },
+  {
+   "key": "inter",
+   "family": "Inter",
+   "file": "inter.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 324820,
+   "sha256": "1b08e7fc267a5c7e1d614100f604b83e7e8a0be241f0f288faa2b3ac93a683ba"
+  },
+  {
+   "key": "open-sans",
+   "family": "Open Sans",
+   "file": "open-sans.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 122116,
+   "sha256": "47ed1cfaa7ffca04a04ab850b2938fd52c09d1b44cfa3e2980878e166b0cbd87"
+  },
+  {
+   "key": "lato",
+   "family": "Lato",
+   "file": "lato.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 72312,
+   "sha256": "f43f1c7780d69792278f04b136c934a0298fc66f2e974bac13dd2e53adc52bde"
+  },
+  {
+   "key": "raleway",
+   "family": "Raleway",
+   "file": "raleway.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 138808,
+   "sha256": "943300b002516feaf028c27aceaa2f473f2e1c0229ed913652a406d43277d9ba"
+  },
+  {
+   "key": "dm-sans",
+   "family": "DM Sans",
+   "file": "dm-sans.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 48280,
+   "sha256": "b0ae3e89a7d3ef2b1838bb4b1ceb0b17cc3435af061eee809d76aa623ff116e9"
+  },
+  {
+   "key": "plus-jakarta-sans",
+   "family": "Plus Jakarta Sans",
+   "file": "plus-jakarta-sans.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 63336,
+   "sha256": "076831b98043f50f829b6c91db3be4a844641f1c95bccff5c886ed87c661a852"
+  },
+  {
+   "key": "work-sans",
+   "family": "Work Sans",
+   "file": "work-sans.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 114144,
+   "sha256": "a131e7022b34ef1950a9d6bdda16f5d4509cc1fe1af5991a4552febd2a4027e5"
+  },
+  {
+   "key": "outfit",
+   "family": "Outfit",
+   "file": "outfit.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 47844,
+   "sha256": "6a8c9be856a6b9e09c66615634904616152c9de5e44db343a3ced240479c586a"
+  },
+  {
+   "key": "rubik",
+   "family": "Rubik",
+   "file": "rubik.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 174992,
+   "sha256": "cc6a4222027f8e57ff86a50c5ba88f12326d7223bde9bf6531538633ebad3343"
+  },
+  {
+   "key": "nunito",
+   "family": "Nunito",
+   "file": "nunito.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 125528,
+   "sha256": "9ecbdba35fa74f10a1a916c31649b802a12deb9e66c7b1fe4650afcfd4d16971"
+  },
+  {
+   "key": "kanit",
+   "family": "Kanit",
+   "file": "kanit.ttf",
+   "category": "Modern & Clean Sans-Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 168768,
+   "sha256": "0b101fdc1a77fb29137731819bf164b3e9b4da19b22a7b2295f0e233c53c486d"
+  },
+  {
+   "key": "oswald",
+   "family": "Oswald",
+   "file": "oswald.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 86068,
+   "sha256": "bd6ff5a83bcdc92d7aac6dbb16e4dd2b0b0320bec6402bb81f5dd9735b500e46"
+  },
+  {
+   "key": "barlow-semi-condensed",
+   "family": "Barlow Semi Condensed",
+   "file": "barlow-semi-condensed.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 83864,
+   "sha256": "9ff9499736c5fad7db00815aafc939b3df67bdee87ce62fb04257fe167c151fd"
+  },
+  {
+   "key": "fjalla-one",
+   "family": "Fjalla One",
+   "file": "fjalla-one.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 206432,
+   "sha256": "ec886264b469ac0299bbfbf05b6f8310c446b1331bb263f7bc2d7479874692ad"
+  },
+  {
+   "key": "pathway-gothic-one",
+   "family": "Pathway Gothic One",
+   "file": "pathway-gothic-one.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 47936,
+   "sha256": "b7769de7976ea689dca2533665e80cbe254b403cf88d6435f98d714711db1d4b"
+  },
+  {
+   "key": "saira-condensed",
+   "family": "Saira Condensed",
+   "file": "saira-condensed.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 77388,
+   "sha256": "dc98368912b9e4d9de15830ba34882697a1a0b8641764159078799d6341e242f"
+  },
+  {
+   "key": "antonio",
+   "family": "Antonio",
+   "file": "antonio.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 36696,
+   "sha256": "ea4b6c9c4ec07de1b5fef158d25a2c1a6048521452a66879f3d9148221caf19d"
+  },
+  {
+   "key": "six-caps",
+   "family": "Six Caps",
+   "file": "six-caps.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 42324,
+   "sha256": "2a7ce0e957411602a02cadf93fd47c7cfe046177c044489d400d9f4b4c34ccac"
+  },
+  {
+   "key": "yanone-kaffeesatz",
+   "family": "Yanone Kaffeesatz",
+   "file": "yanone-kaffeesatz.ttf",
+   "category": "Condensed & Tall",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 75548,
+   "sha256": "790ed41f7ec4873123b07b9a67352e4cbcd51b79225c2ef89dd9e62baaed7395"
+  },
+  {
+   "key": "orbitron",
+   "family": "Orbitron",
+   "file": "orbitron.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 17752,
+   "sha256": "59c2bc6487139f1b8c5754e0cc98ea431ab4c1c1ee142d9d2433ecabe444b59a"
+  },
+  {
+   "key": "exo-2",
+   "family": "Exo 2",
+   "file": "exo-2.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 143780,
+   "sha256": "da4afb13d2fdc3c5a92ca1f68ea2c76d1fa465bbad986780eea396539dcad2d9"
+  },
+  {
+   "key": "audiowide",
+   "family": "Audiowide",
+   "file": "audiowide.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 46972,
+   "sha256": "c42a74135f7f527e69a16826220cece45ec376776cfacdfd6cfd750053215146"
+  },
+  {
+   "key": "rajdhani",
+   "family": "Rajdhani",
+   "file": "rajdhani.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 351464,
+   "sha256": "fd30002d951c14f9ca6322601720b73ef4a9877167a241ab9498cc9039c596e9"
+  },
+  {
+   "key": "chakra-petch",
+   "family": "Chakra Petch",
+   "file": "chakra-petch.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 70260,
+   "sha256": "a5466b946c7decc8021748dcde8b25b8a5325539a341ba9fb59307815b28da5d"
+  },
+  {
+   "key": "michroma",
+   "family": "Michroma",
+   "file": "michroma.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 61440,
+   "sha256": "40d06b46547183d90838788094f0d4125f385ba2580f4f41b8bd39a6b9ea3d6f"
+  },
+  {
+   "key": "oxanium",
+   "family": "Oxanium",
+   "file": "oxanium.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 28376,
+   "sha256": "b19bd4918b692acbe4837e269a5a2854746d490578024ed92831f8f37abbf453"
+  },
+  {
+   "key": "share-tech-mono",
+   "family": "Share Tech Mono",
+   "file": "share-tech-mono.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 41912,
+   "sha256": "5f6b57538a1a35469a038dc3073003cebc4c101ad7b3c219e9555a3b3c0a81d2"
+  },
+  {
+   "key": "press-start-2p",
+   "family": "Press Start 2P",
+   "file": "press-start-2p.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 115280,
+   "sha256": "7b939b816f8ce185dd8c2c59e85fb05d3dcd5cde0c0b0de4a1651cb5af9c2c2b"
+  },
+  {
+   "key": "silkscreen",
+   "family": "Silkscreen",
+   "file": "silkscreen.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 31320,
+   "sha256": "734e6faa40fb5566327330d5b9b6e52fcc5d52ee91f0da1fe696ca33c5f7d258"
+  },
+  {
+   "key": "jetbrains-mono",
+   "family": "JetBrains Mono",
+   "file": "jetbrains-mono.ttf",
+   "category": "Tech, Sci-Fi & Gaming",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 112172,
+   "sha256": "44ce4a84f20d60f24539bd0cef11f79c29e38609e0f8adf18551c9794a5d9dc3"
+  },
+  {
+   "key": "playfair-display",
+   "family": "Playfair Display",
+   "file": "playfair-display.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 123240,
+   "sha256": "1609a54fa3ad1abc8d0037132f73700333241ea0b65672079998e352f151dea7"
+  },
+  {
+   "key": "merriweather",
+   "family": "Merriweather",
+   "file": "merriweather.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 585976,
+   "sha256": "e029d3b71e5bae3877c73f4f2b15af28db16593d49b0aed2a328d37ff7075846"
+  },
+  {
+   "key": "cinzel",
+   "family": "Cinzel",
+   "file": "cinzel.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 45884,
+   "sha256": "a0242f6698ae0d3220a29986a09274f9d1eddb4a24da4e50faf387fd1804eb7b"
+  },
+  {
+   "key": "lora",
+   "family": "Lora",
+   "file": "lora.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 132188,
+   "sha256": "1d37d1e34c77be80f0119754ad78df9aad30d5b1c78132a4cbdac0fe567f5d4f"
+  },
+  {
+   "key": "cormorant-garamond",
+   "family": "Cormorant Garamond",
+   "file": "cormorant-garamond.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 290236,
+   "sha256": "6d37a86241a25d63f8fe6018b4c083449886b7165c1acb15edd0f574f690ecf7"
+  },
+  {
+   "key": "bodoni-moda",
+   "family": "Bodoni Moda",
+   "file": "bodoni-moda.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 44752,
+   "sha256": "7bf8604bdeb63fe00278935c1a7e8595de56dfc053ab43581ca848ffd5ad11ba"
+  },
+  {
+   "key": "spectral",
+   "family": "Spectral",
+   "file": "spectral.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 164228,
+   "sha256": "a25b5c20bf44dacb3e1ed67a461b390ef5057cabc4b300d65fa9fa33e8bd590c"
+  },
+  {
+   "key": "prata",
+   "family": "Prata",
+   "file": "prata.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 96016,
+   "sha256": "6bab61b8b8df3f5a24df69c742f6495060b36aec686f37e534ff91a3bffe40ad"
+  },
+  {
+   "key": "dm-serif-display",
+   "family": "DM Serif Display",
+   "file": "dm-serif-display.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 70348,
+   "sha256": "c03775f8cc3db88cfea259b231abe13f94e6a3d3cb01c09477a2e42a1f5919e1"
+  },
+  {
+   "key": "abril-fatface",
+   "family": "Abril Fatface",
+   "file": "abril-fatface.ttf",
+   "category": "Elegant & Editorial Serif",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 56308,
+   "sha256": "c426e1328c73a1d1c1c36809ead3353b487ae71d3b387ac8daca2d4b6d9124c0"
+  },
+  {
+   "key": "pacifico",
+   "family": "Pacifico",
+   "file": "pacifico.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 251232,
+   "sha256": "0adbdce4f5422e632945cc29001dc19f0bbda1336626ca7ea9c921d49bcc0bf4"
+  },
+  {
+   "key": "caveat",
+   "family": "Caveat",
+   "file": "caveat.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 251024,
+   "sha256": "012f33f9814bf9614973983335c3a375fe267c094e7c09a02a276cd1dcd4180a"
+  },
+  {
+   "key": "dancing-script",
+   "family": "Dancing Script",
+   "file": "dancing-script.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 76340,
+   "sha256": "cbf45d12702db573b174863d83fc137f29ac270240f289aa41942b36032d5201"
+  },
+  {
+   "key": "permanent-marker",
+   "family": "Permanent Marker",
+   "file": "permanent-marker.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 73276,
+   "sha256": "a73712ce4f3b32d3c7a1a657d56c6aaf50c719b7fa7fe0541905fe77f5a9906c"
+  },
+  {
+   "key": "great-vibes",
+   "family": "Great Vibes",
+   "file": "great-vibes.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 362736,
+   "sha256": "9d76b8c67f5289c310114c935c5c3831fc3c25bc2bb888a28210c1659d701b9e"
+  },
+  {
+   "key": "satisfy",
+   "family": "Satisfy",
+   "file": "satisfy.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 46652,
+   "sha256": "d394db8f27c568545da4dc2cbb798c04d9c70cea9beb434039dcf3651a4cde7b"
+  },
+  {
+   "key": "shadows-into-light",
+   "family": "Shadows Into Light",
+   "file": "shadows-into-light.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 39508,
+   "sha256": "9e22fccbcbd08bb567db3c25e97eb894aa96fb090ab61ebe78fb23a65a4fc7f6"
+  },
+  {
+   "key": "kalam",
+   "family": "Kalam",
+   "file": "kalam.ttf",
+   "category": "Handwritten & Script",
+   "scripts": [
+    "latin"
+   ],
+   "bytes": 426488,
+   "sha256": "f20e9de66ca054e1d1376b3c811d2240b1b5ef831474bda9fbbaf28d67e67902"
+  },
+  {
+   "key": "noto-sans-sinhala",
+   "family": "Noto Sans Sinhala",
+   "file": "noto-sans-sinhala.ttf",
+   "category": "Sri Lankan / Sinhala Unicode Support",
+   "scripts": [
+    "latin",
+    "sinhala"
+   ],
+   "bytes": 235928,
+   "sha256": "59414cb52e3c2f1081c4788dad26008a1de7d510211b6c38300308f3557e1fe5"
+  },
+  {
+   "key": "noto-serif-sinhala",
+   "family": "Noto Serif Sinhala",
+   "file": "noto-serif-sinhala.ttf",
+   "category": "Sri Lankan / Sinhala Unicode Support",
+   "scripts": [
+    "latin",
+    "sinhala"
+   ],
+   "bytes": 242752,
+   "sha256": "5b11bfbfa98fa253ffb9056e763525a6c84b73c7ed6934d3609ce42d36445428"
+  },
+  {
+   "key": "abhaya-libre",
+   "family": "Abhaya Libre",
+   "file": "abhaya-libre.ttf",
+   "category": "Sri Lankan / Sinhala Unicode Support",
+   "scripts": [
+    "latin",
+    "sinhala"
+   ],
+   "bytes": 505812,
+   "sha256": "60bd34845341cfa177f8a94dbc0f98bfe72dd6ed2e9a200cc9decaf9269d5658"
+  }
+ ]
+}

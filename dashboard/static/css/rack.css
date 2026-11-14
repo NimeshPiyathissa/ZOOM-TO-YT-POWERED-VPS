@@ -1,0 +1,108 @@
+/* ============================================================
+   Rack modules - the control-room card layer shared by /remote,
+   /zoom, /studio, /overlay and /accounts. Mapped onto the Atrium
+   tokens: glass module cards, sentence-case titles with an accent
+   icon, tally colors from the semantic palette, media chrome
+   (anything drawn over black) from the --media-* tokens.
+   The --rm-* names are kept as page-scoped aliases so every page
+   sheet that already reads them keeps working.
+   ============================================================ */
+
+.rack-grid {
+  --rm-ink: var(--media-ink);
+  --rm-edge: var(--glass-border);
+  --rm-edge-strong: var(--border-strong);
+  --rm-sheen: none;
+  --rm-rule: var(--border);
+  --rm-tally-off: var(--border-strong);
+  --rm-label: var(--text-faint);
+  --rm-glow-live: 0 0 14px 2px var(--live-glow);
+  --rm-glow-accent: 0 6px 20px -6px var(--accent-glow);
+
+  display: grid;
+  gap: var(--space-5);
+  max-width: var(--content-max-w);
+  margin: 0 auto;
+}
+
+.rack-grid > .card {
+  position: relative;
+  border-radius: var(--radius-xl);
+  padding: var(--space-5);
+  min-width: 0;   /* grid items must shrink below their content's min width */
+}
+.rack-grid > .card:hover { transform: none; }
+
+/* Module title: sentence case, semibold, accent icon (mockup card head). */
+.rack-title, .remote-section-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.005em;
+  text-transform: none;
+  color: var(--text);
+}
+.rack-title .icon, .remote-section-title .icon { width: var(--icon-sm); height: var(--icon-sm); color: var(--accent); }
+.rack-title .hint, .remote-section-title .hint { font-weight: var(--weight-normal); margin: 0 0 0 var(--space-1); }
+h3.rack-title, h3.remote-section-title { margin-top: var(--space-6); padding-top: var(--space-5); border-top: var(--border-w) solid var(--border); }
+.rack-title .rack-title-end, .remote-section-title .rack-title-end { margin-left: auto; display: inline-flex; gap: var(--space-2); align-items: center; font-weight: var(--weight-normal); }
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Monospace readouts (IDs, tokens, timers) */
+.readout { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; letter-spacing: 0.01em; }
+
+/* Chip for anything sitting on black */
+.chip-glass {
+  display: inline-flex; align-items: center; gap: var(--space-1-5);
+  padding: var(--space-0-5) var(--space-2-5); border-radius: var(--radius-full);
+  background: var(--bg-sunken); color: var(--text-dim); border: var(--border-w) solid var(--border);
+}
+
+/* No horizontal scroll on rack pages; value updates never reflow. */
+body:has(.rack-grid) { overflow-x: hidden; }
+
+/* ---------------------------------------------------------------- shared form pieces (Zoom page + YouTube deck) */
+.zm-kind .icon { width: var(--icon-xs); height: var(--icon-xs); }
+.zm-kind-webinar { color: var(--info); background: var(--info-tint); }
+.zm-kind-pmi { color: var(--warning); background: var(--warning-tint); }
+.zm-kind-meeting { color: var(--accent); background: var(--accent-tint); }
+.zm-seg .seg-btn { padding: var(--space-1-5) var(--space-3); font-size: var(--text-xs); min-height: var(--control-h-sm); white-space: nowrap; }
+.zm-notes { list-style: none; padding: 0; margin: var(--space-3) 0 0; display: grid; gap: var(--space-2); }
+.zm-notes li { display: flex; gap: var(--space-2); align-items: flex-start; font-size: var(--text-xs); line-height: var(--leading-normal); color: var(--text-dim); }
+.zm-notes li .icon { flex: none; margin-top: 1px; }
+.zm-notes li.tone-bad { color: var(--danger); }
+.zm-notes li.tone-warn .icon { color: var(--warning); }
+.zm-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 var(--space-4); }
+.zm-options { display: grid; gap: var(--space-2); margin-top: var(--space-2); }
+.zm-opt-main { display: inline-flex; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+.zm-opt-main .icon { color: var(--text-dim); }
+.zm-opt-end { display: inline-flex; align-items: center; gap: var(--space-2); }
+.zm-num { width: 64px; text-align: center; font-family: var(--font-mono); }
+.zm-dt { max-width: 220px; font-family: var(--font-mono); font-size: var(--text-sm); }
+.zm-save-row .btn { flex: 1 1 180px; }
+.zm-kind {
+  display: inline-flex; align-items: center; gap: var(--space-1); height: 22px; padding: 0 var(--space-2-5); border-radius: var(--radius-full);
+  font-size: var(--text-2xs); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-wide); text-transform: uppercase;
+  background: var(--bg-hover); color: var(--text-dim); white-space: nowrap;
+}
+.zm-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  min-height: var(--control-h-touch); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md);
+  border: var(--border-w) solid var(--border); background: var(--bg-panel); cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out), background-color var(--duration-fast) var(--ease-out);
+}
+.zm-opt:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.zm-opt:has(input:checked) { border-color: var(--accent-ring); background: var(--accent-tint); }
+@media (max-width: 480px) { .zm-opt { flex-wrap: wrap; } .zm-opt-end { margin-left: auto; } .zm-dt { max-width: 100%; } }
+
+/* Rack pages: buttons with btn-touch are 52px on touch layouts, 44px
+   with a mouse - the control surface stays compact on desktop. */
+@media (hover: hover) and (pointer: fine) and (min-width: 768px) {
+  .rack-grid .btn-touch { --btn-h: var(--control-h-lg); font-size: var(--text-sm); padding: 0 var(--space-4); }
+  .rack-grid .btn-touch.btn-icon { padding: 0; }
+}

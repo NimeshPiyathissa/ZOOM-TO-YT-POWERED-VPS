@@ -1,0 +1,56 @@
+[Unit]
+Description=Zoom Stream Dashboard (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=dashboard
+Group=dashboard
+WorkingDirectory=/home/dashboard/app
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/dashboard/venv/bin/uvicorn app.main:app \
+  --host 127.0.0.1 --port 8000 --workers 1 \
+  --ws-ping-interval 20 --ws-ping-timeout 60
+# ws-ping-timeout raised from uvicorn's 20s default to 60s: the
+# browser-facing /vnc/ws hop (app/vnc_proxy.py) shares this single
+# event loop with the rest of the app, and a brief stall elsewhere
+# (see app/main.py's api_state fix) could otherwise still miss a pong
+# and drop a Remote GUI session that was never actually dead. Not
+# disabled outright (unlike the proxy's own upstream hop to websockify,
+# which is loopback-only) - this hop crosses the real internet and
+# still needs to detect a genuinely dead client.
+# Bound to localhost only - Caddy (systemd unit "caddy") terminates TLS
+# for https://<your-domain> and reverse-proxies to 127.0.0.1:8000 (see
+# scripts/setup-https.sh, run by the installer). No
+# ssl-keyfile/certfile flags needed here since Caddy owns the
+# certificate (Let's Encrypt, auto-renewed) and this process never
+# speaks TLS itself.
+# CapabilityBoundingSet caps what this process AND anything it execs
+# can ever hold, even via a setuid-root binary. Every control.py action
+# goes through `sudo -u zoombot <allowlisted command>` - sudo itself is
+# setuid-root and needs CAP_SETUID/CAP_SETGID to actually switch to
+# zoombot, but the kernel enforces the bounding set as a hard ceiling
+# regardless of sudo's own setuid bit. Binding 8000 is an unprivileged
+# port so CAP_NET_BIND_SERVICE is no longer needed here; keep just the
+# two capabilities sudo needs to do its job - still far short of an
+# unrestricted bounding set, and the sudoers allowlist stays the real
+# privilege boundary either way.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+Restart=always
+RestartSec=5
+# Lower scheduling priority than the encoder (ffmpeg-stream runs at
+# Nice=0 under zoombot) so watching the dashboard never steals cycles
+# from the stream. No filesystem sandboxing here (ProtectHome/
+# ProtectSystem/NoNewPrivileges) - this service works entirely through
+# `sudo -u zoombot <allowlisted command>`, which needs to both invoke a
+# setuid binary (breaks under NoNewPrivileges) and let the sudo'd child
+# write into zoombot's home (breaks under a namespace-inherited
+# read-only ProtectHome). The real privilege boundary here is the
+# sudoers allowlist, not systemd sandboxing.
+Nice=10
+CPUWeight=50
+MemoryMax=512M
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,44 @@
+# Unattended install settings for:  sudo ./install.sh --config /root/zoom-stream.conf
+#
+# Copy this file, fill it in, and protect it (it holds passwords):  chmod 600 /root/zoom-stream.conf
+# Format: KEY=value, one per line. Quotes around a value are optional. Lines starting with # are ignored.
+# Every value is validated exactly like the interactive questions; nothing is installed if one is invalid.
+# Delete the file after the install - the installer does not need it again.
+
+# Domain for the dashboard (its DNS A record must point to this server), or "none" to use the server's IP.
+DOMAIN=none
+
+# HTTPS certificate when DOMAIN is set: "letsencrypt" (free, trusted; needs ports 80+443) or "self-signed".
+SSL_MODE=letsencrypt
+# E-mail for Let's Encrypt expiry notices (required with SSL_MODE=letsencrypt).
+LE_EMAIL=
+
+# Dashboard sign-in. Password: 12+ characters mixing letters, digits and symbols (or 16+ characters).
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=
+
+# YouTube ingest server (Stream URL in YouTube Studio) and stream key. Leave the key empty to set it later in the
+# dashboard (Live Studio).
+YT_RTMP_URL=rtmps://a.rtmps.youtube.com:443/live2
+YT_STREAM_KEY=
+
+# Name the bot shows in Zoom meetings.
+BOT_NAME=Stream Bot
+
+# Output quality: 720p (recommended up to 7 CPU cores) or 1080p (8+ cores). Empty = chosen from the CPU count.
+OUTPUT_PRESET=
+
+# Timezone for the server clock and the Schedule page, e.g. UTC, Europe/London, Asia/Colombo. Empty = keep current.
+TIMEZONE=
+
+# Remote screen (VNC) password and master encryption password. "auto" (or empty) = generate a strong one; generated
+# passwords are written to /root/zoom-stream-credentials.txt (root only).
+VNC_PASSWORD=auto
+MASTER_PASSWORD=auto
+
+# Turn on the ufw firewall (SSH, 443, and 80 for Let's Encrypt) and automatic security updates: yes or no.
+FIREWALL=yes
+AUTO_UPDATES=yes
+
+# Continue when a preflight check only warns (e.g. 2 CPU cores, DNS not pointing here yet): yes or no.
+ACCEPT_WARNINGS=no

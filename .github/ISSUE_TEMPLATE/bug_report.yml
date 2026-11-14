@@ -1,0 +1,62 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Remove stream keys, passwords, meeting links, domains and IP addresses** from
+        everything you paste. Security problems: please use the Security tab instead (see SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `git -C /opt/zoom-stream describe --tags`
+      placeholder: v1.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installer
+        - Update / backup / restore
+        - Dashboard
+        - Zoom joining
+        - Picture / framing
+        - Audio
+        - Streaming to YouTube
+        - Watermark
+        - Schedule
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of sudo /opt/zoom-stream/doctor.sh
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines (redacted)
+      description: Installer log, journalctl -u dashboard, or the Logs page
+      render: text
+  - type: input
+    id: server
+    attributes:
+      label: Server
+      placeholder: e.g. 4 vCPU / 8 GB, Ubuntu 24.04.1

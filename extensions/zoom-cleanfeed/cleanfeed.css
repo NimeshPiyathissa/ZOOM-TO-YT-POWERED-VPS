@@ -1,0 +1,50 @@
+/* Zoom clean feed - applies ONLY while a meeting is on screen (html[data-zs-cleanfeed="on"]). Generated text; do not hand-edit. */
+html[data-zs-cleanfeed="on"] .meeting-app-header,
+html[data-zs-cleanfeed="on"] #header_container,
+html[data-zs-cleanfeed="on"] .header-container,
+html[data-zs-cleanfeed="on"] .meeting-info-header,
+html[data-zs-cleanfeed="on"] .meeting-info-icon__header,
+html[data-zs-cleanfeed="on"] .meeting-topic,
+html[data-zs-cleanfeed="on"] .suspension-header,
+html[data-zs-cleanfeed="on"] .meeting-client-head,
+html[data-zs-cleanfeed="on"] div[role="banner"],
+html[data-zs-cleanfeed="on"] .meeting-client [class*="meeting-app-header"]:not([role="dialog"]):not([role="dialog"] *),
+html[data-zs-cleanfeed="on"] .meeting-client [class*="meeting-header"]:not([role="dialog"]):not([role="dialog"] *),
+html[data-zs-cleanfeed="on"] .meeting-client [class*="header"]:not([role="dialog"]):not([role="dialog"] *) {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+html[data-zs-cleanfeed="on"] #wc-footer,
+html[data-zs-cleanfeed="on"] .footer__control-bar,
+html[data-zs-cleanfeed="on"] .meeting-control-bar,
+html[data-zs-cleanfeed="on"] #foot-bar,
+html[data-zs-cleanfeed="on"] .footer-bar,
+html[data-zs-cleanfeed="on"] .room-footer,
+html[data-zs-cleanfeed="on"] #footer_container,
+html[data-zs-cleanfeed="on"] .footer-container,
+html[data-zs-cleanfeed="on"] [class*="livesdk"],
+html[data-zs-cleanfeed="on"] [id*="livesdk"],
+html[data-zs-cleanfeed="on"] .meeting-client [class*="footer"]:not([role="dialog"]):not([role="dialog"] *),
+html[data-zs-cleanfeed="on"] .meeting-client div[role="toolbar"]:not([role="dialog"]):not([role="dialog"] *) {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+html[data-zs-cleanfeed="on"] .participant-name,
+html[data-zs-cleanfeed="on"] .video-box__name-tag,
+html[data-zs-cleanfeed="on"] [class*="speaker-bar"],
+html[data-zs-cleanfeed="on"] [class*="name-tag"],
+html[data-zs-cleanfeed="on"] #speaker-box-name,
+html[data-zs-cleanfeed="on"] .video-avatar__avatar-name,
+html[data-zs-cleanfeed="on"] .speaker-bar,
+html[data-zs-cleanfeed="on"] .name-label,
+html[data-zs-cleanfeed="on"] [class*="speaker-name"],
+html[data-zs-cleanfeed="on"] [class*="participant-name"],
+html[data-zs-cleanfeed="on"] .speaker-active-name {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+html[data-zs-cleanfeed="on"] ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+html[data-zs-cleanfeed="on"] .meeting-client video, html[data-zs-cleanfeed="on"] .meeting-client canvas { object-fit: contain !important; }

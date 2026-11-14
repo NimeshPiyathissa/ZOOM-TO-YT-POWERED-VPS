@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# 60-second local test: same capture pipeline as stream.sh but writes an
+# .mp4 instead of pushing to YouTube. Use this to check video, audio
+# level, and A/V sync before ever going live.
+
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
+source ./lib.sh
+wait_for_x
+
+RESOLUTION="${RESOLUTION:-1920x1080}"
+FPS="${FPS:-30}"
+AUDIO_BITRATE="${AUDIO_BITRATE:-192}"
+DURATION="${TEST_DURATION:-60}"
+OUT="$LOG_DIR/test-$(date +%Y%m%d-%H%M%S).mp4"
+
+# Part 4: same shared filter-building call stream.sh makes, so this is a
+# genuine proof of what the real broadcast would do with the current
+# watermark config - not a separate, potentially-drifted copy of the
+# logic. Always capture mode here (x11grab=0, pulse=1), so the watermark
+# image (if any) would be input index 2.
+build_watermark_filter 2 "${RESOLUTION%x*}" "${RESOLUTION#*x}"
+log "Watermark: ${WATERMARK_STATE}${WATERMARK_REASON:+ (${WATERMARK_REASON})}${WATERMARK_FONT_FILE:+, font ${WATERMARK_FONT_FILE##*/}}"
+# Same capture size + framing (Fullscreen Live / Meeting only) the broadcast would use.
+build_capture_framing "$RESOLUTION"
+
+# Same video encoder settings as the broadcast (stream.sh), so a test recording shows the real quality and CPU cost.
+VIDEO_BITRATE="${VIDEO_BITRATE:-6000}"
+X264_PRESET="${X264_PRESET:-veryfast}"
+GOP=$((FPS * 2))
+ENCODE_ARGS=(-c:v libx264 -preset "$X264_PRESET" -pix_fmt yuv420p -g "$GOP" -keyint_min "$GOP" -sc_threshold 0
+             -b:v "${VIDEO_BITRATE}k" -maxrate "${VIDEO_BITRATE}k" -bufsize "$((VIDEO_BITRATE * 2))k"
+             ${COLOR_TAG_ARGS[@]+"${COLOR_TAG_ARGS[@]}"} -c:a aac -b:a "${AUDIO_BITRATE}k" -ar 48000 -ac 2)
+INPUT_ARGS=(
+  -f x11grab -video_size "$CAPTURE_SIZE" -framerate "$FPS" -draw_mouse 0 -thread_queue_size 1024 -i "$DISPLAY"
+  -f pulse -thread_queue_size 1024 -i zoom_out.monitor
+)
+# Same audio drift correction as the broadcast (stream.sh), with or without a watermark. It used to be added only when
+# the watermark was off, so a test recording made with the watermark on did not show the broadcast's real A/V sync.
+ENCODE_ARGS+=(-af "aresample=async=1:first_pts=0")
+if [[ -n "$WATERMARK_FILTER" ]]; then
+  INPUT_ARGS+=("${WATERMARK_EXTRA_INPUT_ARGS[@]}")
+  if [[ "${WATERMARK_MODE:-text}" == "image" ]]; then
+    FILTER_COMPLEX="$WATERMARK_FILTER"
+    [[ -n "$CROP_FILTER" ]] && FILTER_COMPLEX="[0:v]${CROP_FILTER}[zcrop];${FILTER_COMPLEX//\[0:v\]/[zcrop]}"
+    ENCODE_ARGS+=(-filter_complex "$FILTER_COMPLEX" -map "[vout]" -map "1:a")
+  else
+    VF="$WATERMARK_FILTER"
+    [[ -n "$CROP_FILTER" ]] && VF="${CROP_FILTER},${VF}"
+    ENCODE_ARGS+=(-vf "$VF")
+  fi
+elif [[ -n "$CROP_FILTER" ]]; then
+  ENCODE_ARGS+=(-vf "$CROP_FILTER")
+fi
+
+log "Recording ${DURATION}s local test to $OUT (watermark: ${WATERMARK_ENABLED:-0}, capture ${CAPTURE_SIZE} -> ${RESOLUTION})"
+[[ -n "$FRAMING_NOTE" ]] && log "$FRAMING_NOTE"
+/usr/bin/ffmpeg -hide_banner -loglevel info -stats -y \
+  "${INPUT_ARGS[@]}" \
+  -t "$DURATION" \
+  "${ENCODE_ARGS[@]}" \
+  "$OUT"
+
+ln -sf "$(basename "$OUT")" "$LOG_DIR/latest-test.mp4"
+
+log "Done: $OUT"
+log "Copy it off the VPS to review, e.g. from your own machine:"
+log "  scp <ssh-user>@<vps-ip>:$OUT ."

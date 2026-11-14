@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Zoom Web Kiosk Clean-Feed",
+  "version": "2.0.0",
+  "description": "Zoom web kiosk clean feed: hides Zoom's header/footer/name tags ONLY while a meeting is on screen; never touches the join, waiting-room or error pages.",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.zoom.us/*",
+        "*://zoom.us/*",
+        "*://*.zoomgov.com/*",
+        "*://zoomgov.com/*",
+        "*://app.zoom.us/*",
+        "*://pwa.zoom.us/*"
+      ],
+      "css": [
+        "cleanfeed.css"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ]
+}

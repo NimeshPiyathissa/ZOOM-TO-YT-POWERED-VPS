@@ -1,0 +1,10 @@
+[Unit]
+Description=Zoom Stream daily disk cleanup (Chrome caches of idle profiles, stale ffmpeg temp files)
+
+[Service]
+Type=oneshot
+# Runs as this --user unit's own (zoombot) user; a user manager cannot switch
+# to root. Journal size is left to journald's own configuration.
+Nice=19
+IOSchedulingClass=idle
+ExecStart=%h/zoom-stream/scripts/auto-vacuum.sh

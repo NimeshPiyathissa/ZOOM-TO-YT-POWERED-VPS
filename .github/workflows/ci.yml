@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: Shell scripts (shellcheck, all severities)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck every script
+        run: |
+          shellcheck --version
+          find . -name '*.sh' -not -path './dashboard/static/vendor/*' -print0 | xargs -0 shellcheck -x
+      - name: bash syntax check
+        run: find . -name '*.sh' -not -path './dashboard/static/vendor/*' -print0 | xargs -0 -n1 bash -n
+
+  python:
+    name: Lint and tests (Python 3.12, as on Ubuntu 24.04)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System tools used by the tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check app/ tests/
+      - run: pytest -q --strict-markers
+      - name: Fail if the shell-level tests were skipped
+        run: |
+          out="$(pytest -q -rs tests/test_env_parser_roundtrip.py tests/test_install_wizard.py 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -q "SKIPPED"; then
+            echo "::error::shell-level tests were skipped - bash/python3 detection is broken in CI" >&2
+            exit 1
+          fi

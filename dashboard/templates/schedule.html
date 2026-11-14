@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Schedule - Zoom Stream Dashboard{% endblock %}
+{% block extra_css %}<link rel="stylesheet" href="{{ static_url('css/pages.css') }}">{% endblock %}
+{% block content %}
+
+<header class="page-header">
+  <div>
+    <h1>Schedule</h1>
+    <p class="page-desc">Join early, then stop and leave automatically at the end. Going live is always your own confirmed Go Live. All times are {{ schedule_timezone }}.</p>
+  </div>
+</header>
+
+<section class="card sched-next accent-cap" id="sched-next" aria-label="Next scheduled run">
+  <span class="icon-well">{{ icon("calendar-clock") }}</span>
+  <div class="sched-next-meta">
+    <span class="eyebrow">Next run</span>
+    <span class="sched-next-when tnum" id="sched-next-when">&hellip;</span>
+    <span class="hint m-0" id="sched-next-name">Loading schedules&hellip;</span>
+  </div>
+  <span class="chip-metric" id="sched-next-count">&ndash;</span>
+</section>
+
+<section class="schedule-page" aria-label="Schedules">
+  <div id="schedule-manager"></div>
+</section>
+
+<script type="application/json" id="schedule-sources-data">{{ sources | tojson }}</script>
+
+{% endblock %}
+{% block scripts %}
+<script src="{{ static_url('js/schedule.js') }}"></script>
+{% endblock %}

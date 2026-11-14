@@ -1,0 +1,252 @@
+/* ============================================================
+   Controls, Schedule, Settings - page structure. Tokens only.
+   ============================================================ */
+
+.section.card { margin-top: var(--space-5); }
+
+/* ---------------------------------------------------------------- Controls */
+.controls-grid { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); gap: var(--space-5); align-items: stretch; }
+.controls-side { display: flex; flex-direction: column; gap: var(--space-5); }
+.controls-side > .card { flex: 1; }
+.controls-source { display: flex; flex-direction: column; }
+.source-hero { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4); border-radius: var(--radius-lg); background: var(--bg-sunken); border: var(--border-w) solid var(--border); }
+.source-hero-icon { width: 48px; height: 48px; border-radius: var(--radius-lg); transition: background-color var(--duration-slow) var(--ease-in-out), color var(--duration-slow) var(--ease-in-out); }
+.source-hero-icon .icon { width: var(--icon-lg); height: var(--icon-lg); }
+.source-hero-meta { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1-5); min-width: 0; }
+.source-hero-meta .badge { text-transform: none; letter-spacing: 0; font-size: var(--text-sm); height: 26px; }
+.source-hero-meta .badge .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.source-hero-url { font-size: var(--text-xs); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.switch-source { margin-top: auto; padding-top: var(--space-5); }
+.switch-source .input-group { flex-wrap: wrap; }
+.switch-source select.input { flex: 1 1 240px; }
+
+/* service rows as a light table */
+.service-table .service-row { padding: var(--space-3) var(--space-2); border-radius: var(--radius-md); border-bottom: var(--border-w) solid var(--border); transition: background-color var(--duration-fast) var(--ease-out); }
+.service-table .service-row:hover { background: var(--bg-hover); }
+.service-table .service-row:last-child { border-bottom: none; }
+.service-table .service-name { min-width: 150px; }
+.service-table .service-meta .tnum { color: var(--text); font-family: var(--font-mono); }
+
+.danger-zone { border-color: color-mix(in srgb, var(--danger) 35%, transparent); background: linear-gradient(90deg, var(--danger-tint), transparent 60%), var(--bg-panel); }
+.danger-zone:hover { border-color: var(--danger); }
+.danger-zone-body { display: flex; align-items: center; gap: var(--space-4); }
+.danger-zone-body > div { flex: 1; min-width: 0; }
+.danger-zone .card-title { color: var(--danger); margin-bottom: var(--space-1); }
+
+@media (max-width: 1023px) {
+  .controls-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 767px) {
+  .danger-zone-body { flex-wrap: wrap; }
+  .danger-zone-body .btn { width: 100%; }
+  .service-table .service-row { flex-wrap: wrap; }
+  .service-table .service-meta { margin-left: 0; order: 3; width: 100%; }
+  .service-table .service-actions { margin-left: auto; }
+}
+
+/* ---------------------------------------------------------------- Schedule */
+.sched-next { display: flex; align-items: center; gap: var(--space-4); margin-bottom: var(--space-5); }
+.sched-next:hover { transform: none; }
+.sched-next .icon-well { width: 48px; height: 48px; border-radius: var(--radius-lg); }
+.sched-next-meta { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.sched-next-when { font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tight); }
+
+.schedule-page #schedule-manager { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: var(--space-5); align-items: start; }
+.schedule-page #sched-ntp-banner { grid-column: 1 / -1; }
+.schedule-page #sched-list {
+  background: var(--glass-tint); border: var(--border-w) solid var(--glass-border); border-radius: var(--radius-xl);
+  box-shadow: var(--glass-shadow); overflow: hidden; min-height: 200px;
+}
+:root[data-theme="black"] .schedule-page #sched-list { background: linear-gradient(var(--glass-tint), var(--glass-tint)), var(--surface); }
+.schedule-page #sched-list .table-wrap { border: none; border-radius: 0; background: transparent; }
+.schedule-page #sched-list .empty-state { padding: var(--space-12) var(--space-4); }
+.schedule-page #sched-form-details {
+  position: sticky; top: calc(var(--topbar-h) + var(--shell-gap) * 2);
+  background: var(--glass-tint-strong); border: var(--border-w) solid var(--glass-border); border-radius: var(--radius-xl);
+  box-shadow: var(--glass-shadow); padding: var(--space-5);
+}
+.schedule-page #sched-form-summary {
+  all: unset; display: flex; align-items: center; gap: var(--space-2); cursor: default;
+  font-size: var(--text-md); font-weight: var(--weight-semibold); color: var(--text); margin-bottom: var(--space-1);
+}
+.schedule-page #sched-form-summary::-webkit-details-marker { display: none; }
+.schedule-page #sched-form-summary .icon { color: var(--accent); }
+.schedule-page #sched-form { grid-template-columns: 1fr 1fr; gap: var(--space-3) var(--space-4); margin-top: var(--space-4); }
+.schedule-page #sched-form .field { margin: 0; }
+.schedule-page #sched-form .field:first-of-type,
+.schedule-page #sched-form .field:nth-of-type(2) { grid-column: 1 / -1; }
+.schedule-page #sched-form .segmented { width: 100%; }
+.schedule-page #sched-form .segmented .seg-btn { flex: 1; padding-left: var(--space-2); padding-right: var(--space-2); }
+.schedule-page #sched-form .switch-label { font-size: var(--text-xs); }
+.schedule-page #sched-form .btn-row { padding-top: var(--space-3); border-top: var(--border-w) solid var(--border); margin-top: var(--space-1); }
+.schedule-page #sched-form .btn-row .btn-primary { flex: 1; }
+
+/* generic (Studio card) details/summary form */
+#sched-form-details > summary { list-style: none; width: max-content; margin-top: var(--space-4); }
+#sched-form-details > summary::-webkit-details-marker { display: none; }
+#sched-form-details[open] > summary .icon { transform: rotate(45deg); }
+.schedule-page #sched-form-details[open] > summary .icon { transform: none; }
+#sched-list td strong { font-weight: var(--weight-semibold); }
+#sched-list .actions-cell { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-1); }
+#sched-list .actions-cell .switch { margin-right: var(--space-2); }
+
+@media (max-width: 1199px) {
+  .schedule-page #schedule-manager { grid-template-columns: 1fr; }
+  .schedule-page #sched-form-details { position: static; }
+}
+@media (max-width: 767px) {
+  .sched-next { flex-wrap: wrap; gap: var(--space-3); }
+  .sched-next .icon-well { display: none; }
+  .sched-next-when { font-size: var(--text-lg); }
+  #sched-list table, #sched-list tbody, #sched-list tr, #sched-list td { display: block; width: 100%; }
+  #sched-list thead { display: none; }
+  #sched-list tr { padding: var(--space-3) var(--space-4); border-bottom: var(--border-w) solid var(--border); }
+  #sched-list td { border: none; padding: var(--space-1) 0; }
+  #sched-list .actions-cell { justify-content: flex-start; padding-top: var(--space-2); }
+  .schedule-page #sched-form { grid-template-columns: 1fr; }
+}
+
+/* ---------------------------------------------------------------- Settings */
+.settings-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.settings-nav {
+  position: sticky; top: calc(var(--topbar-h) + var(--shell-gap) * 2);
+  display: flex; flex-direction: column; gap: 2px; padding: var(--space-2);
+  border-radius: var(--radius-xl); background: var(--glass-tint); border: var(--border-w) solid var(--glass-border); box-shadow: var(--glass-shadow);
+}
+.settings-nav-link {
+  position: relative; display: flex; align-items: center; gap: var(--space-2-5);
+  height: 38px; padding: 0 var(--space-3); border-radius: var(--radius-md);
+  color: var(--text-dim); font-size: var(--text-sm); font-weight: var(--weight-medium); text-decoration: none;
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.settings-nav-link:hover { background: var(--bg-hover); color: var(--text); text-decoration: none; }
+.settings-nav-link.is-active { background: var(--accent-tint); color: var(--text); font-weight: var(--weight-semibold); }
+.settings-nav-link.is-active .icon { color: var(--accent); }
+.settings-nav-link.is-active::before {
+  content: ""; position: absolute; left: 0; top: 25%; bottom: 25%; width: 3px; border-radius: var(--radius-full); background: var(--accent);
+}
+.settings-body { display: flex; flex-direction: column; gap: var(--space-5); min-width: 0; }
+.settings-section { scroll-margin-top: calc(var(--topbar-h) + var(--shell-gap) * 3); }
+.settings-section:hover { transform: none; }
+.settings-section-group { display: flex; flex-direction: column; gap: var(--space-4); scroll-margin-top: calc(var(--topbar-h) + var(--shell-gap) * 3); }
+.settings-section-group > .floating-section-title { margin: var(--space-3) 0 0; }
+.settings-section-head { display: flex; align-items: flex-start; gap: var(--space-3); margin-bottom: var(--space-5); padding-bottom: var(--space-4); border-bottom: var(--border-w) solid var(--border); }
+.settings-section-head h2 { font-size: var(--text-md); margin: var(--space-0-5) 0 var(--space-1); }
+.settings-desc { margin: 0; font-size: var(--text-xs); color: var(--text-dim); max-width: var(--measure); }
+.settings-subhead { font-size: var(--text-sm); font-weight: var(--weight-semibold); margin: var(--space-6) 0 var(--space-3); padding-top: var(--space-5); border-top: var(--border-w) dashed var(--border); }
+.settings-section .switch-row { align-items: flex-start; padding: var(--space-3); border-radius: var(--radius-md); border: var(--border-w) solid var(--border); background: var(--bg-sunken); }
+.settings-section .switch-row .switch { margin-top: 2px; }
+.settings-section .max-w-lg { max-width: 560px; }
+.settings-section .list-row { flex-wrap: wrap; }
+.settings-section .table-wrap { margin-bottom: var(--space-2); }
+.settings-section .table-wrap td:first-child .icon { margin-right: var(--space-1-5); color: var(--text-dim); }
+.form-actions .save-state.is-error { color: var(--danger); }
+.form-actions .save-state .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.form-actions .save-state > * { animation: rise-in var(--duration-base) var(--ease-out); }
+.settings-section.danger-zone .settings-section-head h2 { color: var(--danger); }
+
+@media (max-width: 1023px) {
+  .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-nav { min-width: 0; }
+  .settings-nav {
+    top: calc(var(--topbar-h) + var(--shell-gap) + var(--space-2)); z-index: var(--z-sticky);
+    flex-direction: row; overflow-x: auto; scrollbar-width: none; border-radius: var(--radius-full);
+    background: var(--glass-tint-strong);
+  }
+  .settings-nav::-webkit-scrollbar { display: none; }
+  .settings-nav-link { flex: none; height: 34px; border-radius: var(--radius-full); }
+  .settings-nav-link.is-active::before { display: none; }
+}
+@media (max-width: 767px) {
+  .settings-nav { top: calc(var(--topbar-h) + var(--space-4)); }
+  .settings-section-head .icon-well { display: none; }
+  .form-actions { justify-content: stretch; }
+  .form-actions .btn { flex: 1 1 100%; }
+  .form-actions .save-state { width: 100%; }
+}
+
+/* ---------------------------------------------------------------- Remote GUI (/vnc)
+   Only the chrome around the viewport is styled; the noVNC canvas
+   area stays a plain black device surface.
+   Sizing (static/js/vnc.js + vnc-fit.js): the card is a SLOT with a
+   definite height (--vnc-slot-h, measured to the bottom of the window),
+   and the black panel inside it (.vnc-device) is sized from the real
+   framebuffer. Before this the card had no definite height, so noVNC
+   scaled to the width and the canvas pushed the page past the window. */
+main.page:has(> .vnc-container) { padding-bottom: var(--space-4); }
+.vnc-container { display: flex; flex-direction: column; gap: var(--space-3); width: 100%; min-width: 0; }
+.vnc-container .vnc-head { margin-bottom: 0; flex: none; }
+.vnc-head { margin-bottom: var(--space-2); }
+.vnc-title-group { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.vnc-title-group h1 { margin: 0; }
+.vnc-title-group .program-id { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-faint); letter-spacing: var(--tracking-wide); padding: var(--space-0-5) var(--space-2); border-radius: var(--radius-full); border: var(--border-w) solid var(--border); }
+.vnc-toolbar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.vnc-view-modes .seg-btn { white-space: nowrap; }
+.vnc-viewport-card {
+  position: relative; width: 100%; min-width: 0;
+  height: var(--vnc-slot-h, calc(100dvh - 240px)); min-height: 260px;
+  display: flex; align-items: flex-start; justify-content: center;
+}
+.vnc-device {
+  position: relative; width: 100%; height: 100%; max-width: 100%; max-height: 100%;
+  background: var(--canvas-black); border-radius: var(--radius-xl); border: var(--border-w) solid var(--glass-border);
+  overflow: hidden;
+  /* Grid, not flex: the quick bar sizes to its content and the stage gets the rest. */
+  display: grid; grid-template-rows: minmax(0, 1fr) auto;
+  box-shadow: var(--shadow-lg);
+}
+.vnc-viewport-card.is-fullscreen { position: fixed; inset: 0; width: 100vw; height: 100dvh; z-index: var(--z-modal); align-items: center; background: var(--canvas-black); }
+.vnc-viewport-card.is-fullscreen .vnc-device { border-radius: 0; border: none; box-shadow: none; }
+.vnc-screen-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--canvas-black); }
+/* noVNC renders into the frame; vnc.js sets its box per view mode (in Fill it
+   is larger than the stage and the stage crops it). */
+.vnc-frame { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.vnc-frame > div { width: 100% !important; height: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; overflow: hidden !important; background: transparent !important; }
+.vnc-screen-stage canvas { outline: none; cursor: default; }
+/* One line, always: if it wrapped, its height would change with the panel
+   width, which Smart Fit derives from the bar height - narrow panels drop
+   labels instead (container queries below). */
+.vnc-device { container-type: inline-size; }
+.vnc-quick-bar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: nowrap; gap: var(--space-2);
+  padding: var(--space-2) var(--space-3); z-index: var(--z-raised); min-width: 0; overflow: hidden;
+  background: var(--media-panel); border-top: var(--border-w) solid var(--media-line);
+}
+.vnc-quick-bar .btn-ghost { color: var(--media-text-dim); }
+.vnc-quick-bar .btn-ghost:hover { color: var(--on-media); background: var(--media-fill-faint); }
+.vnc-quick-bar .hint { color: var(--media-text-faint); font-family: var(--font-mono); white-space: nowrap; }
+.vnc-quick-left, .vnc-quick-right { display: flex; align-items: center; gap: var(--space-1); flex-wrap: nowrap; min-width: 0; }
+.vnc-quick-left { flex: none; }
+.vnc-quick-right { flex: 1 1 auto; justify-content: flex-end; gap: var(--space-3); overflow: hidden; }
+.vnc-fit-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.vnc-fit-text.is-warn { color: var(--warning); }
+@container (max-width: 900px) { .vnc-quick-right #vnc-rate-text { display: none; } }
+@container (max-width: 640px) { .vnc-q-label { display: none; } }
+/* Fullscreen Live in the quick bar: its status line yields first, then labels, as the panel narrows. */
+.vnc-quick-bar .fsl, .vnc-quick-bar .cb { margin-right: var(--space-2); }
+.vnc-quick-bar .fsl-status, .vnc-quick-bar .cb-status { max-width: 34ch; }
+@container (max-width: 1180px) { .vnc-quick-bar .fsl-status, .vnc-quick-bar .cb-status { display: none; } }
+@container (max-width: 560px) { .vnc-quick-bar .fsl .fsl-label, .vnc-quick-bar .cb .cb-label { display: none; } }
+/* Fullscreen Live's broadcast frame drawn over the remote screen (vnc.js) - only when it is smaller than the screen. */
+.vnc-broadcast-frame { position: absolute; pointer-events: none; border: 2px dashed var(--accent); border-radius: 2px; box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.28); z-index: 1; }
+.vnc-broadcast-frame[hidden] { display: none; }
+.vnc-broadcast-frame span { position: absolute; top: 4px; left: 6px; font: var(--weight-semibold) var(--text-2xs)/1 var(--font-mono); color: var(--on-media); background: var(--accent-solid); padding: 2px 6px; border-radius: var(--radius-full); }
+/* Short windows: the description line costs picture height. */
+@media (max-height: 860px) { .vnc-head .page-desc { display: none; } }
+.vnc-head { align-items: center; }
+/* Fullscreen Smart Fit: the bar floats over the TOP edge and hides itself,
+   so the picture gets the whole screen. Top, not bottom: Zoom's own meeting
+   toolbar lives at the bottom and must stay reachable. */
+.vnc-device.bar-overlay { grid-template-rows: minmax(0, 1fr); }
+.vnc-device.bar-overlay .vnc-quick-bar {
+  position: absolute; top: 0; left: 0; right: 0; border-top: 0; border-bottom: var(--border-w) solid var(--media-line);
+  transform: translateY(-100%); opacity: 0; transition: transform var(--duration-base) var(--ease-out), opacity var(--duration-base) var(--ease-out);
+}
+.vnc-device.bar-overlay.show-bar .vnc-quick-bar, .vnc-device.bar-overlay .vnc-quick-bar:focus-within { transform: none; opacity: 1; }
+@media (max-width: 767px) {
+  .vnc-device { border-radius: var(--radius-lg); }
+  .vnc-quick-right { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vnc-device.bar-overlay .vnc-quick-bar { transition: none; }
+}

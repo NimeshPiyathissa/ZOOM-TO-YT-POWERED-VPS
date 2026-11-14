@@ -1,0 +1,118 @@
+/* /accounts - layout on top of rack.css modules. Account cards get the
+   same liquid-glass treatment as the nav (see layout.css's --glass-*
+   tokens): translucency, hairline border, layered shadow, with the
+   accent colour reserved for the verified state only, per state colour
+   otherwise. Animations here are transform/opacity or background/color
+   only, 150-250ms, and respect prefers-reduced-motion throughout. */
+
+@media (min-width: 1200px) {
+  .ac-grid { grid-template-columns: minmax(0, 3fr) minmax(320px, 2fr); grid-template-areas: "list add" "list zoom"; align-items: start; }
+  .ac-list-card { grid-area: list; }
+  .ac-add-card { grid-area: add; }
+  .ac-zoom-card { grid-area: zoom; }
+}
+
+.account-list { display: flex; flex-direction: column; gap: var(--space-3); }
+
+.account-card {
+  padding: var(--space-4);
+  border-radius: var(--radius-lg);
+  border: var(--border-w) solid var(--glass-border);
+  background: var(--bg-panel);
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-base) var(--ease-out), transform var(--duration-base) var(--ease-out);
+}
+.account-card:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+/* Accent border is reserved for "verified" - every other state uses its
+   badge colour for the small icon/text pairing only, not the whole
+   card, so a red/amber card border never competes with the one genuine
+   "good to go" signal on the page. */
+.account-card[data-state="verified"] { border-color: color-mix(in srgb, var(--success) 35%, transparent); }
+
+.account-card-main { display: flex; flex-direction: column; gap: var(--space-1); }
+.account-card-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.account-label { font-weight: var(--weight-semibold); display: inline-flex; align-items: center; gap: var(--space-2-5); }
+.account-label::before {
+  content: attr(data-initial); width: 32px; height: 32px; border-radius: 50%; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--text-sm); font-weight: var(--weight-semibold); text-transform: uppercase;
+  color: var(--text-on-accent); background: linear-gradient(135deg, var(--accent), var(--accent-solid));
+  box-shadow: 0 4px 10px -4px var(--accent-glow);
+}
+.account-card[data-state="verified"] .account-label::before { background: linear-gradient(135deg, var(--success), color-mix(in srgb, var(--success) 70%, var(--media-ink))); box-shadow: 0 4px 10px -4px var(--success-glow); }
+
+/* ---------------------------------------------------------------- state badge:
+   colour is never the only signal - icon + text always ride along. */
+.account-state { display: inline-flex; align-items: center; gap: var(--space-1-5); }
+.account-state-icon { width: 14px; height: 14px; flex: none; }
+
+.account-state[data-state="never"] { background: var(--bg-hover); color: var(--text-faint); }
+.account-state[data-state="verified"] { background: var(--success-tint); color: var(--success); }
+.account-state[data-state="stale"],
+.account-state[data-state="check_failed"] { background: var(--warning-tint); color: var(--warning); }
+.account-state[data-state="wrong_account"],
+.account-state[data-state="signed_out"],
+.account-state[data-state="api_wrong_account"] { background: var(--danger-tint); color: var(--danger); }
+.account-state[data-state="api_needs_reauth"],
+.account-state[data-state="api_connected_browser_signed_out"] { background: var(--warning-tint); color: var(--warning); }
+.account-state[data-state="checking"] { background: var(--bg-hover); color: var(--text-dim); }
+.account-state[data-state="checking"] .account-state-icon {
+  animation: account-spin 900ms linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-state[data-state="checking"] .account-state-icon { animation: account-pulse-opacity 1200ms ease-in-out infinite; }
+}
+@keyframes account-spin { to { transform: rotate(360deg); } }
+@keyframes account-pulse-opacity { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Identity line: the wrong_account case shows both masked emails - kept
+   on one flex line, wrapping rather than truncating, so neither is cut
+   off (no layout shift when a verify result lands: this element's
+   height already accommodates two lines via normal wrapping). */
+.account-identity { display: block; }
+.account-identity[data-wrong="1"] { color: var(--danger); }
+.account-identity[data-wrong="1"] strong { color: var(--text); font-weight: var(--weight-semibold); }
+
+.account-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-1) var(--space-3); }
+.account-result { min-height: 1.2em; }
+
+.account-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
+
+.ac-more .menu { min-width: 220px; }
+.ac-danger { color: var(--danger); }
+
+.ac-add-grid { display: grid; gap: var(--space-3); }
+.ac-add-option {
+  padding: var(--space-3); border-radius: var(--radius-md);
+  border: var(--border-w) solid var(--border); background: var(--bg-sunken);
+}
+.ac-add-title { display: flex; align-items: center; gap: var(--space-2); font-weight: var(--weight-semibold); }
+.ac-add-title .icon { color: var(--accent); }
+.ac-add-option .input-group .btn { flex: none; }
+
+.ac-zoom-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); min-height: 28px; }
+.signin-vnc { background: var(--rm-ink); border-radius: var(--radius-lg); overflow: hidden; }
+/* Canvas stage is an absolutely-positioned sibling of the status overlay
+   (base.css .vnc-status-overlay), both filling .signin-vnc (already
+   position:relative via .vnc-frame-box) - same pairing as /vnc's
+   #vnc-screen + #vnc-overlay-msg inside .vnc-viewport-card. noVNC's own
+   RFB instance (scaleViewport) watches this box and autoscales the real
+   framebuffer into it, letterboxed - no JS sizing needed here. */
+.vnc-canvas-stage {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.vnc-canvas-stage > div { width: 100% !important; height: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; overflow: hidden !important; }
+.vnc-canvas-stage canvas { outline: none; }
+
+/* ---------------------------------------------------------------- mobile */
+@media (max-width: 767px) {
+  .account-card-head { flex-direction: column; align-items: flex-start; }
+  /* Stacked, full-width action buttons rather than a wrapped row of
+     narrow ones - each stays comfortably thumb-sized with no horizontal
+     scroll, and the primary action (Sign in / Re-authenticate) leads. */
+  .account-card-actions { flex-direction: column; align-items: stretch; }
+  .account-card-actions .btn { width: 100%; }
+  .account-card-actions .ac-more { align-self: stretch; }
+  .account-card-actions .ac-more .btn { width: 100%; }
+}

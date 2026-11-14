@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Log in - Zoom Stream Dashboard{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <aside class="login-art" aria-hidden="true">
+    <span class="login-orb o1"></span><span class="login-orb o2"></span>
+    <span class="login-rings"><i></i><i></i><i></i></span>
+    <div class="login-brand">
+      <span class="sidebar-brand-mark">{{ icon("hg-brand") }}</span>
+      <span>Zoom Stream</span>
+    </div>
+    <div>
+      <h2>Go live without the <em>guesswork.</em></h2>
+      <p>Join the webinar, frame it, and send it to YouTube from one calm control room.</p>
+    </div>
+    <div class="login-art-foot"><span class="live-dot"></span>Broadcast console</div>
+  </aside>
+  <div class="login-card">
+    <div class="login-top">
+      <div class="login-brand">
+        <span class="sidebar-brand-mark">{{ icon("hg-brand") }}</span>
+        <span>Zoom Stream</span>
+      </div>
+      <div class="menu-wrap theme-switch">
+        <button type="button" class="btn btn-ghost btn-icon menu-trigger theme-switch-trigger" aria-label="Change theme" aria-haspopup="menu" data-tooltip="Theme">{{ icon("sun") | safe }}</button>
+        <div class="menu" role="menu" inert>
+          <div class="menu-label">Appearance</div>
+          <button class="menu-item" type="button" role="menuitemradio" data-theme-choice="system">{{ icon("monitor", "icon-sm") | safe }}System</button>
+          <button class="menu-item" type="button" role="menuitemradio" data-theme-choice="white">{{ icon("sun", "icon-sm") | safe }}Light</button>
+          <button class="menu-item" type="button" role="menuitemradio" data-theme-choice="black">{{ icon("moon", "icon-sm") | safe }}Dark</button>
+        </div>
+      </div>
+    </div>
+    <h1>Zoom Stream Dashboard</h1>
+    <p class="login-sub">Sign in to run the Zoom-to-YouTube broadcast.</p>
+    {% if error %}<div class="error-box" role="alert">{{ icon("alert-circle", "icon-sm") }} {{ error }}</div>{% endif %}
+    <form method="post" action="/login" id="login-form" novalidate>
+      <div class="field">
+        <label class="label" for="username">Username</label>
+        <input class="input" id="username" name="username" autocomplete="username" required autofocus aria-describedby="username-error">
+        <div class="field-error" id="username-error" hidden>{{ icon("alert-circle", "icon-sm") }}Enter your username.</div>
+      </div>
+      <div class="field">
+        <label class="label" for="password">Password</label>
+        <div class="input-group">
+          <input class="input" id="password" name="password" type="password" autocomplete="current-password" required aria-describedby="password-error">
+          <button type="button" class="btn btn-ghost btn-icon" id="password-toggle" aria-label="Show password" aria-pressed="false" data-tooltip="Show password">{{ icon("eye", "icon-sm") }}</button>
+        </div>
+        <div class="field-error" id="password-error" hidden>{{ icon("alert-circle", "icon-sm") }}Enter your password.</div>
+      </div>
+      <button type="submit" class="btn btn-primary btn-lg w-full" id="login-submit">Log in</button>
+    </form>
+    <div class="login-foot">{{ icon("lock", "icon-sm") }}Sessions expire automatically. Repeated failed attempts lock sign-in for 15 minutes.</div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ static_url('js/login.js') }}"></script>
+{% endblock %}

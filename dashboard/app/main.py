@@ -1,0 +1,3913 @@
+from __future__ import annotations
+
+import asyncio
+import functools
+import weakref
+import datetime as dt
+import hashlib
+import json
+import logging
+import pathlib
+import re
+import subprocess
+import threading
+import time
+
+from fastapi import FastAPI, Request, Response, HTTPException, WebSocket
+from fastapi.responses import (
+    HTMLResponse, RedirectResponse, JSONResponse, StreamingResponse, FileResponse, PlainTextResponse,
+)
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+
+from . import config, db, security, deps, control, env_store, profiles as profiles_mod
+from . import logs as logs_mod
+from . import preview, stats, scheduler, vnc_proxy
+from . import sources as sources_mod
+from . import probe as probe_mod
+from . import url_security
+from .url_security import URLSecurityError
+from . import zoomlink
+from . import cdp, youtube, youtube_watch
+from .youtube import YouTubeURLError
+from . import accounts as accounts_mod
+from .accounts import AccountError
+from . import audio_level
+from . import status as unit_status
+from . import broadcast
+from . import zoom_state
+from . import framing
+from . import fullscreen_live
+from . import clean_broadcast, zoom_layout
+from . import recording, settings_store, telegram
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent.parent
+logger = logging.getLogger("zoom-stream.main")
+
+
+class _RevalidateStaticFiles(StaticFiles):
+    """Plain StaticFiles sends no Cache-Control at all, which left browsers
+    free to heuristically cache JS/CSS with no server directive - the exact
+    gap that let a browser keep running a stale, already-fixed vnc.js well
+    past the point a normal reload (not a hard-refresh bypassing cache)
+    should have picked up the new one. no-cache does NOT mean "don't cache"
+    - it means "cache it, but always ask the server first"; the ETag below
+    still makes that ask cheap (a bodyless 304) when nothing changed."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app = FastAPI(title="Zoom Stream Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
+templates = Jinja2Templates(
+    directory=str(BASE_DIR / "templates"),
+    # Injected into every TemplateResponse context automatically (login
+    # included - it has no session yet) so base.html can set
+    # <html data-theme="..."> in the initial response with zero flash,
+    # without touching the ~80 existing per-route template-context dicts.
+    context_processors=[lambda request: {"theme": _resolve_theme(request)}],
+)
+app.mount("/static", _RevalidateStaticFiles(directory=str(BASE_DIR / "static")), name="static")
+
+# Belt-and-suspenders on top of the Cache-Control fix above: {{ static_url(...) }}
+# appends a short content-hash query string, so even a cache that ignores
+# Cache-Control (a misbehaving proxy, an old browser, Chrome's occasional
+# heuristic-caching edge cases) still can't serve a deployed-over asset
+# under its old URL - the URL itself changes the moment the file does.
+# Hashed once per path per process lifetime: static files only change via
+# a deploy, and every deploy restarts dashboard.service.
+_static_hash_cache: dict[str, str] = {}
+
+
+def _static_url(path: str) -> str:
+    h = _static_hash_cache.get(path)
+    if h is None:
+        try:
+            data = (BASE_DIR / "static" / path).read_bytes()
+            h = hashlib.sha256(data).hexdigest()[:10]
+        except OSError:
+            h = "0"
+        _static_hash_cache[path] = h
+    return f"/static/{path}?v={h}"
+
+
+templates.env.globals["static_url"] = _static_url
+templates.env.globals["schedule_timezone"] = config.SCHEDULE_TIMEZONE
+
+
+# ---------------------------------------------------------------- helpers
+
+def _is_https(request: Request) -> bool:
+    if not config.TRUST_FORWARDED_PROTO:
+        return True  # this process terminates TLS itself
+    return request.headers.get("x-forwarded-proto", "").lower() == "https"
+
+
+def _set_session_cookie(response: Response, request: Request, session_id: str) -> None:
+    response.set_cookie(
+        config.COOKIE_NAME, session_id,
+        max_age=config.SESSION_ABSOLUTE_TIMEOUT_SECONDS,
+        httponly=True, samesite="strict", secure=_is_https(request), path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(config.COOKIE_NAME, path="/")
+
+
+_THEME_COOKIE = "zsdash_theme"
+_VALID_THEMES = ("white", "black", "default")
+
+
+def _resolve_theme(request: Request) -> str | None:
+    """None means "no explicit choice yet" - base.html omits data-theme
+    entirely and tokens.css's prefers-color-scheme block picks White or
+    Black for the device. A cookie (set the moment anyone, logged in or
+    not, picks a theme) always wins when present; it's also how the
+    login page itself stays themed. Falls back to a logged-in user's
+    saved DB preference when the cookie is missing (a new browser)."""
+    cookie_theme = request.cookies.get(_THEME_COOKIE)
+    if cookie_theme in _VALID_THEMES:
+        return cookie_theme
+    session = deps.get_session(request)
+    if session:
+        with db.get_conn() as conn:
+            row = conn.execute("SELECT theme FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        if row and row["theme"] in _VALID_THEMES:
+            return row["theme"]
+    return None
+
+
+def _set_theme_cookie(response: Response, request: Request, theme: str) -> None:
+    response.set_cookie(
+        _THEME_COOKIE, theme, max_age=365 * 24 * 3600,
+        httponly=True, samesite="strict", secure=_is_https(request), path="/",
+    )
+
+
+def _require_page(request: Request):
+    """Returns a session dict, or a RedirectResponse to /login to return
+    directly from the route handler."""
+    session = deps.get_session(request)
+    if not session:
+        return RedirectResponse("/login", status_code=303)
+    return session
+
+
+def _api_error(exc: Exception) -> JSONResponse:
+    return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        # noVNC is vendored under /static/vendor/novnc, so no third-party
+        # script origin is needed any more (was: https://cdn.jsdelivr.net).
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' data: https://fonts.gstatic.com; "
+        # blob: is required for the Overview preview thumbnail (overview.js
+        # fetches a JPEG and shows it via URL.createObjectURL), a JS-created
+        # same-origin object URL, not attacker-controllable remote content.
+        # i.ytimg.com: YouTube's public thumbnail CDN for the saved-links
+        # library (app/youtube.py thumbnail_url) - images only.
+        "img-src 'self' data: blob: https://i.ytimg.com; "
+        "connect-src 'self' ws: wss:; "
+        "frame-src 'self' https://www.youtube.com; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    )
+    return response
+
+
+# ---------------------------------------------------------------- auth
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    if deps.get_session(request):
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse("login.html", {"request": request, "error": None})
+
+
+@app.post("/login")
+async def login_submit(request: Request):
+    form = await request.form()
+    username = str(form.get("username", "")).strip()
+    password = str(form.get("password", ""))
+    ip = deps.client_ip(request)
+
+    if security.is_locked_out(ip, username):
+        db.audit(username, "login_locked_out", ip=ip)
+        return templates.TemplateResponse(
+            "login.html",
+            {"request": request, "error": "Too many failed attempts. Try again in 15 minutes."},
+            status_code=429,
+        )
+
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+
+    ok = bool(row) and security.verify_password(password, row["password_hash"])
+    security.record_login_attempt(ip, username, ok)
+    if not ok:
+        db.audit(username, "login_failed", ip=ip)
+        return templates.TemplateResponse(
+            "login.html", {"request": request, "error": "Invalid username or password."}, status_code=401
+        )
+
+    security.clear_login_failures(ip, username)
+    session_id, _csrf = security.create_session(row["id"], ip)
+    db.audit(username, "login_success", ip=ip)
+    resp = RedirectResponse("/", status_code=303)
+    _set_session_cookie(resp, request, session_id)
+    # If this browser has no theme cookie yet but the account has a saved
+    # preference (set from a different browser), apply it immediately
+    # rather than waiting for one extra render to notice.
+    if not request.cookies.get(_THEME_COOKIE) and row["theme"] in _VALID_THEMES:
+        _set_theme_cookie(resp, request, row["theme"])
+    return resp
+
+
+@app.post("/logout")
+async def logout(request: Request):
+    session_id = request.cookies.get(config.COOKIE_NAME)
+    if session_id:
+        security.destroy_session(session_id)
+    resp = RedirectResponse("/login", status_code=303)
+    _clear_session_cookie(resp)
+    return resp
+
+
+@app.post("/api/theme")
+async def set_theme(request: Request):
+    """Works whether or not the caller is logged in - the login page has
+    its own theme switcher and there's no session yet to attach a
+    preference to, so it only ever sets the cookie in that case. CSRF is
+    only checked once a session exists (same rule /login itself follows:
+    nothing to check against before one exists)."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    # Reachable without a session (login page), so malformed input is a 400, never a 500.
+    theme = str(body.get("theme", "")).strip().lower() if isinstance(body, dict) else ""
+    if theme not in _VALID_THEMES:
+        raise HTTPException(status_code=400, detail="Invalid theme")
+    session = deps.get_session(request)
+    if session:
+        deps.require_csrf(request, session)
+        with db.get_conn() as conn:
+            conn.execute("UPDATE users SET theme=? WHERE id=?", (theme, session["user_id"]))
+    resp = JSONResponse({"ok": True, "theme": theme})
+    _set_theme_cookie(resp, request, theme)
+    return resp
+
+
+# ---------------------------------------------------------------- pages
+
+@app.get("/", response_class=HTMLResponse)
+async def overview_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("overview.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "units": config.VISIBLE_UNITS,
+    })
+
+
+@app.get("/controls", response_class=HTMLResponse)
+async def controls_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    active = sources_mod.get_active_source()
+    return templates.TemplateResponse("controls.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "units": config.VISIBLE_UNITS, "sources": sources_mod.list_sources_public(),
+        "active_source_id": active["id"] if active else None,
+    })
+
+
+@app.get("/remote", response_class=HTMLResponse)
+async def remote_page(request: Request):
+    """Touch-first quick-control surface (Part 3) - a separate page from
+    /controls (the full admin settings page) on purpose: this is the
+    small set of things worth doing one-handed from a phone while away
+    from the desk, not the whole pipeline/danger-zone surface."""
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    links = youtube_watch.list_links()
+    active = sources_mod.get_active_source()
+    return templates.TemplateResponse("remote.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "youtube_links": links, "youtube_settings": youtube_watch.get_settings(),
+        "sources": sources_mod.list_sources_public(),
+        "active_source_id": active["id"] if active else None,
+        "sources_rev": sources_mod.sources_rev(),
+        "accounts": accounts_mod.list_accounts(),
+    })
+
+
+@app.get("/zoom", response_class=HTMLResponse)
+async def zoom_page(request: Request):
+    """The Zoom page: every way of joining a meeting, the live meeting
+    state, and the saved-meetings library - which is simply the zoom-type
+    rows of the one `sources` table /remote also lists."""
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    active = sources_mod.get_active_source()
+    meetings = [s for s in sources_mod.list_sources_public() if s["type"] == "zoom"]
+    return templates.TemplateResponse("zoom.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "meetings": meetings, "active_source_id": active["id"] if active else None,
+        "sources_rev": sources_mod.sources_rev(),
+        "accounts": accounts_mod.list_accounts(), "timezone": config.TIMEZONE,
+    })
+
+
+@app.get("/studio", response_class=HTMLResponse)
+async def studio_page(request: Request):
+    """Dedicated YouTube Live Studio Room: broadcast-grade master controls,
+    real-time tally strip, stream health telemetry, dual-channel audio peak ladder,
+    stream key / RTMP manager, source indicator, and mobile slide-over live chat."""
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    active = sources_mod.get_active_source()
+    parsed_env = env_store.read_parsed()
+    yt_key = parsed_env.get("YT_STREAM_KEY", "")
+    masked_key_hint = f"••••••••••••{yt_key[-4:]}" if len(yt_key) >= 4 else ("Configured" if yt_key else "Not configured")
+
+    studio_settings = {
+        "video_id": db.get_setting("yt_studio_video_id", "") or "",
+        "watch_url": db.get_setting("yt_studio_watch_url", "") or "",
+        "control_room_url": db.get_setting("yt_studio_control_room_url", "https://studio.youtube.com/channel/live/livestreaming") or "https://studio.youtube.com/channel/live/livestreaming",
+    }
+
+    return templates.TemplateResponse("studio.html", {
+        "request": request,
+        "csrf_token": session["csrf_token"],
+        "username": session["username"],
+        "active_source": active,
+        "stream_key_configured": bool(yt_key),
+        "stream_key_hint": masked_key_hint,
+        "rtmp_ingest_url": "rtmps://a.rtmps.youtube.com:443/live2",
+        "studio_settings": studio_settings,
+        "sources_rev": sources_mod.sources_rev(),
+        "sources": sources_mod.list_sources_public(),
+    })
+
+
+@app.get("/overlay", response_class=HTMLResponse)
+async def overlay_page(request: Request):
+    """Zero-CPU OBS-Style Text Overlay Studio: interactive 16:9 canvas preview,
+    draggable text positioning, snap-to-corner anchors, rich typography engine
+    with 15+ Google Fonts, font styling, outline/stroke, background box, and drop shadow."""
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    from . import overlay
+    state = overlay.get_overlay_state()
+    return templates.TemplateResponse("overlay.html", {
+        "request": request,
+        "csrf_token": session["csrf_token"],
+        "username": session["username"],
+        "overlay_state": state,
+        "google_fonts": [f["family"] for f in overlay.font_catalogue() if f["installed"]],
+        "font_categories": overlay.font_categories(installed_only=True),
+        "font_catalogue": overlay.font_catalogue(),
+        "watermark_problems": overlay.config_problems(state),
+        "next_stream_message": overlay.NEXT_STREAM_MESSAGE,
+    })
+
+
+@app.get("/accounts", response_class=HTMLResponse)
+async def accounts_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("accounts.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "accounts": accounts_mod.list_accounts(),
+    })
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_alias_page(request: Request):
+    return await config_page(request)
+
+
+@app.get("/output", response_class=HTMLResponse)
+async def output_page(request: Request):
+    """Output: how the Zoom meeting is framed for YouTube (Auto / Fit / Fill), background fill, encoder preset, a live
+    before/after preview and encoder health. Framing/preset changes never start or restart the stream."""
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("output.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "presets": config.OUTPUT_PRESETS,
+    })
+
+
+@app.post("/api/output/preset")
+async def api_output_preset(request: Request):
+    """{preset: <key of config.OUTPUT_PRESETS>}: encoder resolution/fps/bitrate/x264 preset for the NEXT encoder start.
+    The virtual screen keeps its size (DISPLAY_SIZE is pinned to it when the output resolution differs), the Clean
+    Broadcast plan is re-made for the new output size, and nothing is started or restarted."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "output_preset", max_calls=6, window_seconds=30)
+    body = await request.json()
+    key = str(body.get("preset", ""))
+    if key not in config.OUTPUT_PRESETS:
+        raise HTTPException(status_code=400, detail="unknown preset")
+    preset = config.OUTPUT_PRESETS[key]
+    updates = {k: preset[k] for k in ("RESOLUTION", "FPS", "VIDEO_BITRATE", "X264_PRESET")}
+    current = await run_in_threadpool(env_store.read_parsed)
+    display = await preview._display_size()
+    if not (current.get("DISPLAY_SIZE") or "").strip() and display and display != updates["RESOLUTION"]:
+        updates["DISPLAY_SIZE"] = display              # the screen stays as it is; only the encoder output changes
+    try:
+        await run_in_threadpool(env_store.write_updates, updates)
+    except (env_store.ValidationError, control.ControlError) as exc:
+        return _api_error(exc)
+    control.note_encoder_filter_changed()
+    replanned = False
+    active = sources_mod.get_active_source()
+    if active and active["type"] == "zoom":
+        source = sources_mod.get_source(active["id"])
+        options = dict(source.get("options") or {})
+        layout = (options.get("clean_plan") or {}).get("layout")
+        if options.get("clean_broadcast") and layout:
+            disp = fullscreen_live.parse_size(display) or (1920, 1080)
+            p = _cb_plan(disp, layout, _cb_prefs(options))
+            if p["crop"]["lost_pct"] == 0 or options.get("clean_policy") == "fill":
+                options.update(clean_filter=p["filter"], clean_capture=p["capture_size"], clean_plan=p)
+                await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"],
+                                        options, source.get("account_id"))
+                await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+                replanned = True
+    pending = await run_in_threadpool(control.encoder_filter_stale)
+    db.audit(session["username"], "output_preset", f"{key} {updates} replanned={replanned} pending_restart={pending}",
+             deps.client_ip(request))
+    return {"ok": True, "preset": key, "applied": updates, "replanned": replanned, "pending_restart": pending,
+            "message": ("Saved. The live stream keeps its current settings until an authorized restart."
+                        if pending else "Saved: the next Go Live uses these settings.")}
+
+
+@app.get("/config", response_class=HTMLResponse)
+async def config_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    active = sources_mod.get_active_source()
+    zoom_account = {
+        "label": db.get_setting("zoom_account_label", ""),
+        "confirmed_signed_in": db.get_setting("zoom_account_signed_in", "0") == "1",
+    }
+    return templates.TemplateResponse("config.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "cfg": env_store.masked_view(), "sources": sources_mod.list_sources_public(),
+        "active_source_id": active["id"] if active else None,
+        "presets": config.RESOLUTION_PRESETS,
+        "auto_recovery": db.get_setting("auto_recovery", "off"),
+        "webhook_configured": bool(db.get_setting("webhook_url", "")),
+        "zoom_account": zoom_account,
+        "signin_modes": sorted(config.ZOOM_SIGNIN_MODES),
+        "direct_modes": sorted(config.DIRECT_MODES),
+        "accounts": accounts_mod.list_accounts(),
+        "telegram_cfg": settings_store.masked_settings(),
+    })
+
+
+@app.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("logs.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "units": config.VISIBLE_UNITS, "errors": logs_mod.recent_errors(),
+    })
+
+
+@app.get("/vnc", response_class=HTMLResponse)
+async def vnc_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    # No VNC password is passed to the template: /vnc/ws (app/vnc_proxy.py)
+    # authenticates to x11vnc server-side and offers the browser only the
+    # "None" security type, so the real password has no reason to ever
+    # reach the page source (it used to, as a dead fallback for
+    # noVNC's own credential prompt - see static/js/vnc-embed.js).
+    return templates.TemplateResponse(
+        "vnc.html",
+        {
+            "request": request, "username": session["username"],
+            "csrf_token": session["csrf_token"],
+        },
+    )
+
+
+@app.get("/schedule", response_class=HTMLResponse)
+async def schedule_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    return templates.TemplateResponse("schedule.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "sources": sources_mod.list_sources_public(),
+    })
+
+
+@app.get("/audit", response_class=HTMLResponse)
+async def audit_page(request: Request):
+    session = _require_page(request)
+    if isinstance(session, RedirectResponse):
+        return session
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 200").fetchall()
+    return templates.TemplateResponse("audit.html", {
+        "request": request, "csrf_token": session["csrf_token"], "username": session["username"],
+        "rows": [dict(r) for r in rows],
+    })
+
+
+# ---------------------------------------------------------------- api: state / preview
+
+def _truncate_url(url: str, head: int = 40, tail: int = 12) -> str:
+    if len(url) <= head + tail + 1:
+        return url
+    return f"{url[:head]}…{url[-tail:]}"
+
+
+async def _unit_show_safe(unit: str) -> dict:
+    try:
+        return await run_in_threadpool(control.unit_show, unit)
+    except control.ControlError as exc:
+        return {
+            "unit": unit, "active_state": "unknown", "sub_state": "",
+            "phase": control.PHASE_STOPPED, "main_pid": 0, "error": str(exc),
+        }
+
+
+@app.get("/api/state")
+async def api_state(request: Request):
+    deps.require_session_api(request)
+    # This is the most-polled endpoint in the app (every open page, every 2s -
+    # see static/js/studio.js's statePollTimer) and this process also serves
+    # /vnc/ws (app/vnc_proxy.py) on the same single-threaded event loop.
+    # unit_show() shells out (sudo -u zoombot systemctl --user show ...) -
+    # real fork/exec/PAM/D-Bus latency that stretches under the CPU
+    # contention ffmpeg-stream's encoder creates at go-live. Looping these
+    # calls synchronously here (as this used to) blocked the event loop for
+    # the whole loop's duration on every poll, which is what starved the VNC
+    # proxy's byte-pump/ping-pong and produced the "Reconnecting ->
+    # disconnected" bug exactly when the stream started. Fetching them
+    # concurrently via run_in_threadpool keeps the loop free regardless of
+    # how slow an individual subprocess call gets.
+    units = await asyncio.gather(*(_unit_show_safe(unit) for unit in config.VISIBLE_UNITS))
+    stream_show = None
+    for show in units:
+        # Fetched exactly once, reused for both the hero/top-badge summary
+        # below and this same unit's row in `units` - see control.py's
+        # module note on the disagreement bug this fixes.
+        if show["unit"] == "ffmpeg-stream":
+            stream_show = show
+
+    active_source = sources_mod.get_active_source()
+    active_source_view = None
+    source_health = None
+    if active_source:
+        active_source_view = {
+            "id": active_source["id"], "name": active_source["name"], "type": active_source["type"],
+            "url": zoomlink.redact_url(active_source["url"]),
+            "url_truncated": _truncate_url(zoomlink.redact_url(active_source["url"])),
+        }
+        if active_source["type"] == "webpage":
+            source_health = stats.webpage_health()
+
+    producer_unit = control.producer_unit_for(active_source)
+    unit_status.annotate_units(units, producer_unit, active_source["type"] if active_source else None)
+    producer_ready = None
+    if active_source is not None:
+        producer_ready = True if not producer_unit else any(u["unit"] == producer_unit and u["phase"] == control.PHASE_LIVE for u in units)
+    broadcast_state = broadcast.snapshot(stream_show, producer_ready)
+    return {
+        "stream": stats.stream_state(stream_show),
+        "ffmpeg": stats.ffmpeg_progress(stream_show),
+        "system": stats.system_stats(),
+        "units": units,
+        "services": await run_in_threadpool(unit_status.system_services) + unit_status.pipeline_indicators(broadcast_state),
+        "active_source": active_source_view,
+        "producer_unit": producer_unit,
+        "broadcast": broadcast_state,
+        "source_health": source_health,
+        "server_time": time.time(),
+    }
+
+
+@app.get("/api/preview.jpg")
+async def api_preview(request: Request):
+    deps.require_session_api(request)
+    await preview.manager.touch()
+    data = preview.manager.latest_bytes()
+    if not data:
+        raise HTTPException(status_code=404, detail="no preview available yet")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+# ---------------------------------------------------------------- api: unit / pipeline / stream control
+
+async def _checked_unit_action(unit: str, verb: str, grant=None) -> dict:
+    """control.unit_action() plus the two things the UI used to hide:
+    * systemctl refusing the command (ok=false used to come back as HTTP 200, so the page said "sent");
+    * a start/restart that is accepted but dies within a few seconds (a bad .env value, a missing source...),
+      which used to look exactly like success until the next poll showed "Stopped" with no explanation.
+    Starting/restarting the ENCODER needs `grant` (see app/broadcast.py); control.unit_action enforces it.
+    Raises control.ControlError with a human reason; returns the action result otherwise."""
+    result = await run_in_threadpool(functools.partial(control.unit_action, unit, verb, grant=grant))
+    if not result.get("ok"):
+        raise control.ControlError(result.get("stderr") or f"systemctl {verb} {unit} failed")
+    if verb in ("start", "restart"):
+        seen_live = 0
+        for _ in range(8):                      # ~5 s at most; never blocks longer than that
+            await asyncio.sleep(0.6)
+            show = await run_in_threadpool(control.unit_show, unit)
+            phase = show["phase"]
+            if phase == control.PHASE_LIVE:
+                seen_live += 1
+                if seen_live >= 2:
+                    break
+                continue
+            if phase in (control.PHASE_FAILED, control.PHASE_STOPPED, control.PHASE_RECONNECTING):
+                detail = ""
+                if unit == "ffmpeg-stream":
+                    detail = (stats.stream_state(show) or {}).get("last_error") or ""
+                    if not detail:
+                        detail = (await run_in_threadpool(stats.last_ffmpeg_log_error)) or ""
+                if detail:                                                       # never echo a stream key
+                    detail = (await run_in_threadpool(logs_mod.build_redactor))(detail)
+                raise control.ControlError(
+                    f"{unit} was started but stopped again right away"
+                    + (f": {detail}" if detail else " without reporting an error - see the Logs page."))
+    return result
+
+
+# ---------------------------------------------------------------- broadcast authorization (app/broadcast.py)
+
+_loop_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _bl() -> asyncio.Lock:
+    """One start/stop/restart decision at a time per event loop (production has exactly one loop; the per-loop map only
+    keeps test clients, which spin up a loop per request, from sharing a lock across loops). Double starts are ALSO
+    impossible without it: a grant can be consumed once, atomically (broadcast.consume_grant)."""
+    loop = asyncio.get_running_loop()
+    lock = _loop_locks.get(loop)
+    if lock is None:
+        lock = _loop_locks[loop] = asyncio.Lock()
+    return lock
+
+
+def _bcast_error(exc: "broadcast.BroadcastError") -> JSONResponse:
+    return JSONResponse({"error": str(exc), "code": exc.code}, status_code=exc.status)
+
+
+async def _broadcast_view() -> dict:
+    """Everything the confirmation dialog and the status panels need - no secrets (the key is never read, only 'is one set')."""
+    source = sources_mod.get_active_source()
+    show = await run_in_threadpool(control.unit_show, "ffmpeg-stream")
+    producer = control.producer_unit_for(source)
+    ready = None
+    if source is not None:
+        if producer:
+            ready = (await run_in_threadpool(control.unit_show, producer))["phase"] == control.PHASE_LIVE
+        else:
+            ready = True
+    snap = broadcast.snapshot(show, ready)
+    try:
+        key_set = bool((await run_in_threadpool(env_store.read_parsed)).get("YT_STREAM_KEY"))
+    except Exception:
+        key_set = None
+    return {**snap, "source": ({"id": source["id"], "name": source["name"], "type": source["type"]} if source else None),
+            "destination": {"platform": "YouTube Live (RTMPS)", "host": "a.rtmps.youtube.com", "stream_key": (
+                "configured" if key_set else ("missing" if key_set is False else "unknown"))}}
+
+
+async def _broadcast_warnings(view: dict) -> list[dict]:
+    warnings: list[dict] = []
+    source = sources_mod.get_active_source()
+    if source is None:
+        warnings.append({"code": "no_source", "text": "No source is selected, so the stream would show whatever is on the server's virtual display."})
+    elif source.get("type") == "zoom":
+        try:
+            st = await run_in_threadpool(control.zoom_meeting_status)
+        except control.ControlError as exc:
+            st = {"status": "unknown", "detail": str(exc)}
+        if st.get("status") != "in_meeting":
+            warnings.append({"code": "not_in_meeting", "text": f"Zoom is not confirmed to be in a meeting ({st.get('detail') or st.get('status')}). Viewers would see the Zoom window as it is."})
+    if view["destination"]["stream_key"] == "missing":
+        warnings.append({"code": "no_stream_key", "text": "No YouTube stream key is configured - the encoder will not start."})
+    return warnings
+
+
+@app.get("/api/broadcast")
+async def api_broadcast(request: Request):
+    deps.require_session_api(request)
+    return await _broadcast_view()
+
+
+@app.get("/api/broadcast/preflight")
+async def api_broadcast_preflight(request: Request):
+    """What the Go Live confirmation shows: the selected source, the destination (no secrets) and any warnings."""
+    deps.require_session_api(request)
+    view = await _broadcast_view()
+    return {**view, "warnings": await _broadcast_warnings(view)}
+
+
+@app.post("/api/broadcast/authorize")
+async def api_broadcast_authorize(request: Request):
+    """Step 1 of Go Live / restart: called only AFTER the operator confirmed in the dialog. Returns a 60 s, single-use
+    grant bound to this user and to the exact source (id + revision). Warnings must be explicitly acknowledged."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "broadcast_authorize", max_calls=6, window_seconds=30)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    purpose = str(body.get("purpose") or "go_live")
+    async with _bl():
+        view = await _broadcast_view()
+        warnings = await _broadcast_warnings(view)
+        if any(w["code"] == "no_stream_key" for w in warnings):
+            return JSONResponse({"error": warnings[-1]["text"], "code": "no_stream_key", "warnings": warnings}, status_code=409)
+        if warnings and body.get("ack_warnings") is not True:
+            return JSONResponse({"error": "Confirm the warnings before going live.", "code": "warnings_not_acknowledged",
+                                 "warnings": warnings}, status_code=409)
+        try:
+            grant = broadcast.issue_grant(session["username"], purpose, sources_mod.get_active_source(),
+                                          sources_mod.sources_rev(), view["state"])
+        except broadcast.BroadcastError as exc:
+            return _bcast_error(exc)
+    db.audit(session["username"], "broadcast_authorize", f"purpose={purpose} source={(view['source'] or {}).get('name')}", deps.client_ip(request))
+    return {**grant, "source": view["source"], "destination": view["destination"], "warnings": warnings}
+
+
+async def _start_encoder_authorized(session, grant_id: str, purpose: str, ip: str) -> dict:
+    """Atomically consume the grant, record the session, hand stream.sh its one-time permission and start (or restart)
+    the encoder. Serialized: a duplicate or concurrent request sees LIVE/STARTING and is refused (or answered idempotently
+    when it carries the very grant that started the live session)."""
+    async with _bl():
+        source, rev = sources_mod.get_active_source(), sources_mod.sources_rev()
+        show = await run_in_threadpool(control.unit_show, "ffmpeg-stream")
+        snap = broadcast.snapshot(show, True)
+        if snap["session"] and snap["session"].get("id") == grant_id and snap["state"] in (broadcast.LIVE, broadcast.STARTING):
+            return {"ok": True, "already": True, "state": snap["state"]}       # idempotent replay of the same start
+        if purpose == "go_live" and snap["state"] in (broadcast.LIVE, broadcast.STARTING, broadcast.STOPPING):
+            raise broadcast.BroadcastError("already_" + snap["state"].lower(), f"The broadcast is already {snap['state'].lower()}.")
+        grant = broadcast.consume_grant(grant_id, session["username"], purpose, source, rev)
+        broadcast.begin_session(grant, source)
+        try:
+            await run_in_threadpool(control.write_broadcast_auth, grant.env())
+            result = await _checked_unit_action("ffmpeg-stream", "start" if purpose == "go_live" else "restart", grant=grant)
+        except control.ControlError as exc:
+            broadcast.fail_session("The encoder could not be started.", {"error": str(exc)[:300]})
+            raise
+        finally:
+            try:
+                await run_in_threadpool(control.clear_broadcast_auth)           # the permission is single-use
+            except Exception:
+                pass
+        broadcast.mark_live()
+    db.audit(session["username"], "broadcast_" + ("start" if purpose == "go_live" else "restart"),
+             f"source={(source or {}).get('name')}", ip)
+    return result
+
+
+async def _stop_encoder(session, ip: str) -> dict:
+    async with _bl():
+        broadcast.mark_stop_requested()
+        try:
+            result = await _checked_unit_action("ffmpeg-stream", "stop")
+        finally:
+            try:
+                await run_in_threadpool(control.clear_broadcast_auth)
+            except Exception:
+                pass
+    db.audit(session["username"], "broadcast_stop", ip=ip)
+    return result
+
+
+@app.get("/api/stream/preflight")
+async def api_stream_preflight(request: Request):
+    """Back-compat for older pages: just the warnings (the new dialog uses /api/broadcast/preflight)."""
+    deps.require_session_api(request)
+    view = await _broadcast_view()
+    return {"warnings": await _broadcast_warnings(view)}
+
+
+@app.post("/api/units/{unit}/{verb}")
+async def api_unit_action(unit: str, verb: str, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    if verb not in ("start", "stop", "restart"):
+        raise HTTPException(status_code=400, detail="invalid verb")
+    if unit == "ffmpeg-stream":
+        if verb == "stop":
+            try:
+                return await _stop_encoder(session, deps.client_ip(request))
+            except control.ControlError as exc:
+                return _api_error(exc)
+        return JSONResponse({"error": "The encoder can only be started through Go Live with a confirmation. "
+                                      "Use the Go Live button.", "code": "use_go_live"}, status_code=409)
+    try:
+        result = await _checked_unit_action(unit, verb)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], f"unit_{verb}", unit, deps.client_ip(request))
+    return result
+
+
+@app.post("/api/pipeline/restart")
+async def api_pipeline_restart(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    results = await run_in_threadpool(control.pipeline_restart)
+    db.audit(session["username"], "pipeline_restart", ip=deps.client_ip(request))
+    return {"results": results, "note": "The encoder is stopped by a pipeline restart and is never started by it: press Go Live to broadcast again."}
+
+
+@app.post("/api/stream/{action}")
+async def api_stream_action(action: str, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "stream_" + action, max_calls=6, window_seconds=15)
+    if action not in ("go-live", "stop", "restart"):
+        raise HTTPException(status_code=400, detail="invalid action")
+    ip = deps.client_ip(request)
+    try:
+        if action == "stop":
+            # Manual control always wins: a manual stop suppresses the schedule's own handling for this occurrence.
+            await run_in_threadpool(scheduler.note_manual_override)
+            return await _stop_encoder(session, ip)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        grant_id = str((body or {}).get("grant") or "") if isinstance(body, dict) else ""
+        return await _start_encoder_authorized(session, grant_id, "go_live" if action == "go-live" else "restart", ip)
+    except broadcast.BroadcastError as exc:
+        return _bcast_error(exc)
+    except control.ControlError as exc:
+        return _api_error(exc)
+
+
+def _schedule_zoom_followup(source: dict, join_via: str = "client") -> None:
+    """Exactly one background follow-up after a zoom source becomes
+    active/joined, depending on the path: the desktop client gets
+    _apply_join_options_later (mic/camera/view, unchanged); a direct web
+    join gets _web_join_followup (drives Zoom's pre-join screen to
+    actually reach the meeting); join_method "auto" gets
+    _auto_fallback_watcher (watches the client attempt and falls back to
+    web only on a mechanism-level failure - see its docstring for exactly
+    which failures those are). Shared by the dedicated Join/Rejoin
+    buttons (_zoom_action) and the generic source-switch endpoint
+    (api_sources_switch), which is also how /remote and the scheduler
+    activate a zoom source."""
+    method = (source.get("options") or {}).get("join_method", "client")
+    if method == "auto":
+        asyncio.create_task(_auto_fallback_watcher(source["id"]))
+    elif join_via == "web":
+        asyncio.create_task(_web_join_followup(source["id"]))
+    else:
+        asyncio.create_task(_apply_join_options_later(source["id"]))
+
+
+async def _zoom_action(action: str, request: Request):
+    """join / rejoin re-apply the active Zoom source's config first (so a
+    fresh ZOOM_JOIN_EPOCH resets the rejoin counter), then start/restart
+    whichever producer join_method resolves to; leave stops it. After a
+    join, exactly one background follow-up is scheduled - see
+    _schedule_zoom_followup."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_" + action, max_calls=6, window_seconds=15)
+    active = sources_mod.get_active_source()
+    try:
+        result = await run_in_threadpool(control.zoom_join, action, active)
+        if not result.get("ok", True):
+            raise control.ControlError(result.get("stderr") or f"Zoom {action} failed - see Logs")
+    except control.ControlError as exc:
+        return _api_error(exc)
+    if action in ("join", "rejoin") and active:
+        sources_mod.mark_joined(active["id"])
+        _schedule_zoom_followup(active, result.get("join_via", "client"))
+    db.audit(session["username"], f"zoom_{action}", active["name"] if active else "", deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/join")
+async def api_zoom_join(request: Request):
+    return await _zoom_action("join", request)
+
+
+@app.post("/api/zoom/leave")
+async def api_zoom_leave(request: Request):
+    return await _zoom_action("leave", request)
+
+
+@app.post("/api/zoom/rejoin")
+async def api_zoom_rejoin(request: Request):
+    return await _zoom_action("rejoin", request)
+
+
+_join_options_last: dict = {}
+
+
+async def _apply_join_options_later(source_id: int, timeout: float = 150.0) -> None:
+    """Poll for the meeting window after a join, then enforce the saved
+    mic/camera/view options once. Result is kept for the Zoom page to
+    show (GET /api/zoom/join-options)."""
+    deadline = time.time() + timeout
+    _join_options_last.clear()
+    _join_options_last.update({"source_id": source_id, "state": "waiting", "started_at": time.time()})
+    try:
+        while time.time() < deadline:
+            await asyncio.sleep(4)
+            st = await run_in_threadpool(control.zoom_meeting_status)
+            if st.get("status") == "in_meeting":
+                s = sources_mod.get_source(source_id)
+                if not s:
+                    break
+                report = await run_in_threadpool(control.zoom_apply_join_options, s)
+                _join_options_last.update({"state": "done", "report": report, "finished_at": time.time()})
+                db.audit(None, "zoom_join_options_applied",
+                         f"source_id={source_id} applied={','.join(report.get('applied', []))} skipped={','.join(report.get('skipped', []))}")
+                return
+            if st.get("terminal") or (st.get("status") == "not_joined" and st.get("service") == control.PHASE_STOPPED):
+                _join_options_last.update({"state": "abandoned", "status": st.get("status"), "finished_at": time.time()})
+                return
+        # Never saw "in a meeting" - but a main Zoom window may still be up
+        # (detection is best-effort), and Meeting-only is a window-level
+        # setting that doesn't need the toolbar. Try it once rather than
+        # leaving Zoom's chrome on screen.
+        extra: dict = {}
+        s = sources_mod.get_source(source_id)
+        if s and ((s.get("options") or {}).get("meeting_only") or (s.get("options") or {}).get("fullscreen_live")):
+            try:
+                extra["meeting_only"] = await run_in_threadpool(control.zoom_set_meeting_only, True)
+            except control.ControlError as exc:
+                extra["meeting_only"] = {"applied": False, "note": str(exc)}
+        _join_options_last.update({"state": "timeout", "finished_at": time.time(), **extra})
+    except Exception as exc:  # noqa: BLE001 - background task must not die silently
+        _join_options_last.update({"state": "error", "error": str(exc)[:200], "finished_at": time.time()})
+
+
+async def _web_join_followup(source_id: int, timeout: float = 75.0) -> None:
+    """join_method=web: browser-source.sh has already navigated the kiosk
+    to the wc/join URL by the time this runs; drives Zoom's pre-join
+    screen the rest of the way (zoom_web.join_from_browser) and records
+    which path was used. Shares _join_options_last with the desktop
+    follow-up so the Zoom page only has to poll one endpoint regardless
+    of path."""
+    from . import zoom_web
+    _join_options_last.clear()
+    _join_options_last.update({"source_id": source_id, "state": "web_joining", "started_at": time.time()})
+    try:
+        s = sources_mod.get_source(source_id)
+        if not s:
+            _join_options_last.update({"state": "abandoned", "finished_at": time.time()})
+            return
+        options = s.get("options") or {}
+        result = await run_in_threadpool(
+            zoom_web.join_from_browser, options.get("bot_name", "Stream Bot"), options.get("passcode") or None, timeout,
+        )
+        await run_in_threadpool(sources_mod.set_last_join_method, source_id, "web")
+        db.audit(None, "zoom_web_join",
+                 f"source_id={source_id} ok={result.get('ok')} status={(result.get('status') or {}).get('status')}")
+        _join_options_last.update({"state": "done" if result.get("ok") else "web_failed",
+                                   "result": result, "finished_at": time.time()})
+    except Exception as exc:  # noqa: BLE001 - background task must not die silently
+        _join_options_last.update({"state": "error", "error": str(exc)[:200], "finished_at": time.time()})
+
+
+async def _auto_fallback_watcher(source_id: int) -> None:
+    """join_method=auto: the join already started on the desktop client (control.zoom_join resolves auto to "client" for
+    the first attempt - see producer_unit_for). This watches the client and falls back to the web client ONLY on positive
+    evidence that the desktop path failed (zoom_state.fallback_decision): the client is gone / reported a launch error, or
+    it is readable and still on its home screen well after the join request. "Not confirmed" is NOT a failure: a desktop
+    client whose window cannot be read (no AT-SPI) used to be abandoned after 40 s and stopped even though it had joined.
+    Now such a client is simply left alone and reported as 'unconfirmed'. Terminal states that belong to the meeting itself
+    (passcode, expired, locked, ...) never trigger a fallback either. Nothing here ever starts the encoder."""
+    from . import zoom_web
+    start = time.time()
+    _join_options_last.clear()
+    _join_options_last.update({"source_id": source_id, "state": "watching_client", "started_at": start,
+                               "reason": "giving the desktop client time to join"})
+    try:
+        while True:
+            await asyncio.sleep(4)
+            elapsed = time.time() - start
+            st = await run_in_threadpool(control.zoom_meeting_status)
+            try:
+                unit = await run_in_threadpool(control.unit_show, "zoom")
+                unit_active = unit["phase"] in (control.PHASE_LIVE, control.PHASE_STARTING)
+            except control.ControlError:
+                unit_active = False
+            desktop = zoom_state.classify_desktop(st, unit_active)
+            decision = zoom_state.fallback_decision(desktop, elapsed=elapsed, auto_mode=True)
+            _join_options_last.update({"reason": decision["reason"], "desktop_state": desktop["status"],
+                                       "desktop_confidence": desktop["confidence"], "checked_at": time.time()})
+            action = decision["action"]
+            if action == "done":
+                await run_in_threadpool(sources_mod.set_last_join_method, source_id, "client")
+                if desktop["status"] == "in_meeting":
+                    s = sources_mod.get_source(source_id)
+                    if s:
+                        report = await run_in_threadpool(control.zoom_apply_join_options, s)
+                        _join_options_last.update({"state": "done", "report": report, "finished_at": time.time()})
+                else:
+                    _join_options_last.update({"state": "abandoned", "status": desktop["status"], "finished_at": time.time()})
+                return
+            if action == "stop_watching":
+                _join_options_last.update({"state": "unconfirmed", "status": desktop["status"], "finished_at": time.time()})
+                db.audit(None, "zoom_join_unconfirmed", f"source_id={source_id} {decision['reason']}"[:160])
+                return
+            if action == "fallback":
+                break
+
+        # Positive evidence that the desktop path failed - continue the same operator-initiated join on the web client
+        # (switch_zoom_join_via deliberately doesn't touch ZOOM_JOIN_EPOCH/rejoin counters).
+        s = sources_mod.get_source(source_id)
+        if not s:
+            _join_options_last.update({"state": "abandoned", "reason": "source no longer exists", "finished_at": time.time()})
+            return
+        _join_options_last.update({"state": "falling_back_to_web"})
+        options = s.get("options") or {}
+        await run_in_threadpool(control.switch_zoom_join_via, "web")
+        await run_in_threadpool(control.unit_action, "zoom", "stop")
+        await run_in_threadpool(control.unit_action, "browser-source", "restart")
+        result = await run_in_threadpool(
+            zoom_web.join_from_browser, options.get("bot_name", "Stream Bot"), options.get("passcode") or None,
+        )
+        await run_in_threadpool(sources_mod.set_last_join_method, source_id, "web")
+        db.audit(None, "zoom_auto_fallback",
+                 f"source_id={source_id} web_ok={result.get('ok')} status={(result.get('status') or {}).get('status')} "
+                 f"reason={decision['reason']}"[:200])
+        _join_options_last.update({"state": "done" if result.get("ok") else "web_failed",
+                                   "result": result, "fell_back": True, "fallback_reason": decision["reason"],
+                                   "finished_at": time.time()})
+    except Exception as exc:  # noqa: BLE001 - background task must not die silently
+        _join_options_last.update({"state": "error", "error": str(exc)[:200], "finished_at": time.time()})
+
+
+@app.get("/api/zoom/join-options")
+async def api_zoom_join_options_last(request: Request):
+    deps.require_session_api(request)
+    return dict(_join_options_last)
+
+
+@app.post("/api/zoom/apply-options")
+async def api_zoom_apply_options(request: Request):
+    """Enforce the active meeting's saved mic/camera/view now (only
+    toggles a control whose read-back state differs; unknown = left
+    alone and reported)."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_apply_options", max_calls=6, window_seconds=30)
+    active = sources_mod.get_active_source()
+    if not active or active["type"] != "zoom":
+        raise HTTPException(status_code=400, detail="the active source isn't a Zoom meeting")
+    report = await run_in_threadpool(control.zoom_apply_join_options, active)
+    db.audit(session["username"], "zoom_apply_options",
+             f"applied={','.join(report.get('applied', []))} skipped={','.join(report.get('skipped', []))}", deps.client_ip(request))
+    return report
+
+
+@app.get("/api/zoom/meeting-only")
+async def api_zoom_meeting_only_state(request: Request):
+    """Whether the running encoder still has an older Meeting-only/Fit
+    filter than the saved settings (so the UI can offer "Restart stream
+    to apply" after a reload, not just right after the change)."""
+    deps.require_session_api(request)
+    return {"pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+
+
+@app.post("/api/zoom/meeting-only")
+async def api_zoom_meeting_only(request: Request):
+    """Toggle "Meeting only" full-frame mode for the active Zoom source:
+    persists meeting_only/meeting_only_fit on the source (so it's
+    reapplied on every future join - see zoom_apply_join_options) and
+    writes current-source.env immediately, then applies the window-level
+    part (true fullscreen + pointer park) right now if a meeting window
+    exists. The encoder's crop/fit filter is baked into ffmpeg's filter
+    graph at process start, so a change there needs an encoder restart:
+    reported as `restart_needed`, and performed only when the caller
+    passes `restart: true` (the UI asks the operator first - it drops the
+    RTMP connection for a few seconds)."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_meeting_only", max_calls=10, window_seconds=30)
+    body = await request.json()
+    enabled = bool(body.get("enabled"))
+    fit = str(body.get("fit", "fit") or "fit").strip().lower()
+    want_restart = bool(body.get("restart"))
+    if fit not in config.ZOOM_MEETING_ONLY_FIT_MODES:
+        raise HTTPException(status_code=400, detail=f"fit must be one of {sorted(config.ZOOM_MEETING_ONLY_FIT_MODES)}")
+    active = sources_mod.get_active_source()
+    if not active or active["type"] != "zoom":
+        raise HTTPException(status_code=400, detail="the active source isn't a Zoom meeting")
+    source = sources_mod.get_source(active["id"])
+    options = dict(source.get("options") or {})
+    # The encoder's filter is a function of (on, fit, measured region) - fit/region are irrelevant while off.
+    was_filter = _framing_key(options)
+    reset = bool(body.get("reset"))
+    auto = bool(body.get("auto", options.get("meeting_only_auto", False))) and enabled and not reset
+    options["meeting_only"] = enabled
+    options["meeting_only_fit"] = "fit" if reset else fit
+    options["meeting_only_auto"] = auto
+    # Choosing a Meeting-only framing by hand ends Fullscreen Live / Clean Broadcast (they would otherwise keep
+    # overriding this choice).
+    options.update(_FSL_CLEARED)
+    options.update(_CB_CLEARED)
+    measure = None
+    if not auto:
+        options["meeting_only_region"] = ""            # Reset / Auto off / Meeting-only off: back to the fixed trims
+    elif not options.get("meeting_only_region"):
+        measure = await framing.measure()              # Auto just switched on: measure the real screen once now
+        if measure.get("region"):
+            options["meeting_only_region"] = measure["region"]
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], options, source.get("account_id"))
+    updated = sources_mod.get_source(active["id"])
+    await run_in_threadpool(control.write_current_source, updated)
+    filter_changed = _framing_key(updated.get("options") or {}) != was_filter
+    if filter_changed:
+        control.note_encoder_filter_changed()
+    window_result = None
+    try:
+        window_result = await run_in_threadpool(control.zoom_set_meeting_only, enabled)
+    except control.ControlError as exc:
+        window_result = {"applied": False, "note": str(exc)}
+    restart_needed = await run_in_threadpool(control.encoder_filter_stale)
+    restarted = False
+    if restart_needed and want_restart:
+        try:
+            await _start_encoder_authorized(session, str(body.get("grant") or ""), "restart", deps.client_ip(request))
+            restarted, restart_needed = True, False
+        except (control.ControlError, broadcast.BroadcastError) as exc:
+            window_result = {**(window_result or {}), "restart_error": str(exc)}
+    db.audit(session["username"], "zoom_meeting_only",
+             f"enabled={enabled} fit={options['meeting_only_fit']} auto={auto} region={options.get('meeting_only_region') or '-'} "
+             f"reset={reset} restarted={restarted}", deps.client_ip(request))
+    return {"enabled": enabled, "fit": options["meeting_only_fit"], "auto": auto,
+            "region": options.get("meeting_only_region") or "", "measure": measure, "window": window_result,
+            "restart_needed": restart_needed, "restarted": restarted}
+
+
+def _framing_key(options: dict):
+    """What the encoder's crop/scale graph is built from; None while Clean Broadcast, Meeting-only and Fullscreen Live
+    are off."""
+    if options.get("clean_broadcast"):
+        return ("clean_broadcast", options.get("clean_filter") or "", options.get("clean_capture") or "")
+    if options.get("fullscreen_live"):
+        return ("fullscreen_live", options.get("fullscreen_box") or "", options.get("fullscreen_capture") or "")
+    if not options.get("meeting_only"):
+        return None
+    region = (options.get("meeting_only_region") or "") if options.get("meeting_only_auto") else ""
+    return (options.get("meeting_only_fit", "fit") or "fit", region)
+
+
+# ---------------------------------------------------------------- Fullscreen Live (app/fullscreen_live.py)
+# One click frames the Zoom meeting losslessly for a 1920x1080 broadcast: Zoom window fullscreen + pointer parked
+# (toolbars auto-hide), geometry checked (desktop / window / capture), the whole screen measured, and the smallest
+# 16:9 box around all content saved for the encoder. It NEVER starts, stops or restarts the encoder: the framing is
+# baked into ffmpeg at process start, so a live stream keeps its current framing and `pending_restart` says so - the
+# existing authorized restart (Go Live confirmation grant) is the only way to apply it mid-stream.
+
+_FSL_SETTLE_SECONDS = 1.5
+# Explicit "off" values (not deleted keys): sources.update_source carries absent Fullscreen Live keys forward.
+_FSL_CLEARED = {"fullscreen_live": False, "fullscreen_box": "", "fullscreen_capture": "", "fullscreen_restore": None,
+                "fullscreen_plan": None}
+
+
+def _fsl_output_size() -> tuple[int, int]:
+    size = fullscreen_live.parse_size(env_store.read_parsed().get("RESOLUTION", ""))
+    return size or (1920, 1080)
+
+
+def _fsl_status(options: dict) -> dict:
+    plan = options.get("fullscreen_plan") or None
+    if plan and plan.get("state") == "native" and not plan.get("chrome_checked"):
+        # Saved by the first Fullscreen Live version, which could not see Zoom's grey toolbars: never report it as
+        # "no borders" - it was not verified.
+        plan = dict(plan, state="unverified", summary="Saved before Zoom's toolbars could be detected - not verified. "
+                                                       "Use Clean Broadcast (or re-check) to measure the meeting.")
+    return {"active": bool(options.get("fullscreen_live")), "plan": plan,
+            "box": options.get("fullscreen_box") or "", "capture": options.get("fullscreen_capture") or "",
+            "restore_available": bool(options.get("fullscreen_restore"))}
+
+
+@app.get("/api/zoom/fullscreen-live")
+async def api_zoom_fullscreen_live_state(request: Request):
+    """Read-only: saved Fullscreen Live state, whether the running encoder is behind it, and the encoder phase."""
+    deps.require_session_api(request)
+    active = sources_mod.get_active_source()
+    zoom = bool(active and active["type"] == "zoom")
+    options = ((sources_mod.get_source(active["id"]) or {}).get("options") or {}) if zoom else {}
+    try:
+        phase = (await run_in_threadpool(control.unit_show, "ffmpeg-stream"))["phase"]
+    except control.ControlError:
+        phase = "UNKNOWN"
+    return {"zoom_source": zoom, **_fsl_status(options), "encoder_phase": phase,
+            "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+
+
+@app.post("/api/zoom/fullscreen-live")
+async def api_zoom_fullscreen_live(request: Request):
+    """{action: "apply" | "restore"}. Window + framing only - see the block comment above. Never touches the encoder."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_fullscreen_live", max_calls=6, window_seconds=30)
+    body = await request.json()
+    action = str(body.get("action", "")).strip().lower()
+    if action not in ("apply", "restore"):
+        raise HTTPException(status_code=400, detail="action must be apply or restore")
+    active = sources_mod.get_active_source()
+    if not active or active["type"] != "zoom":
+        raise HTTPException(status_code=400, detail="Fullscreen Live frames a Zoom meeting - the active source isn't one. "
+                                                    "Pick the Zoom source first.")
+    source = sources_mod.get_source(active["id"])
+    options = dict(source.get("options") or {})
+    was_filter = _framing_key(options)
+    try:
+        phase = (await run_in_threadpool(control.unit_show, "ffmpeg-stream"))["phase"]
+    except control.ControlError:
+        phase = "UNKNOWN"
+    live = phase in (control.PHASE_LIVE, control.PHASE_STARTING)
+
+    if action == "restore":
+        snap = options.get("fullscreen_restore")
+        if not options.get("fullscreen_live") and not snap:
+            return {"ok": True, "action": "restore", "state": "original", "message": "Already on the original framing.",
+                    **_fsl_status(options), "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+        snap = snap or {}
+        for k in fullscreen_live.RESTORE_KEYS:
+            if k in snap:
+                options[k] = snap[k]
+            else:
+                options.pop(k, None)
+        options.update(_FSL_CLEARED)
+        window = None
+        if snap.get("window_fullscreen") is False and not options.get("meeting_only"):
+            try:
+                window = await run_in_threadpool(control.zoom_set_meeting_only, False)
+            except control.ControlError as exc:
+                window = {"applied": False, "note": str(exc)}
+        await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], options, source.get("account_id"))
+        await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+        if _framing_key(options) != was_filter:
+            control.note_encoder_filter_changed()
+        pending = await run_in_threadpool(control.encoder_filter_stale)
+        db.audit(session["username"], "zoom_fullscreen_live", f"restore live={live} pending_restart={pending}", deps.client_ip(request))
+        msg = "Original framing restored."
+        if pending:
+            msg += " The live stream keeps Fullscreen Live framing until its next authorized start or restart."
+        return {"ok": True, "action": "restore", "state": "original", "message": msg, "window": window,
+                **_fsl_status(options), "encoder_phase": phase, "pending_restart": pending}
+
+    # apply
+    window_before = await run_in_threadpool(control.zoom_window_geometry)
+    try:
+        window_result = await run_in_threadpool(control.zoom_set_meeting_only, True)
+    except control.ControlError as exc:
+        window_result = {"applied": False, "note": str(exc)}
+    if window_result.get("applied"):
+        await asyncio.sleep(_FSL_SETTLE_SECONDS)       # let Zoom re-lay out and its toolbars start hiding
+    window_after = await run_in_threadpool(control.zoom_window_geometry)
+    display = fullscreen_live.parse_size(await preview._display_size()) or (1920, 1080)
+    output = await run_in_threadpool(_fsl_output_size)
+    measured = await framing.measure(f"{display[0]}x{display[1]}", 0, 0)
+    chrome = await _cb_measure_meeting(display)        # Zoom's own bars are not black: check for them separately
+    p = fullscreen_live.plan(display, output, output, window_after, measured, chrome=chrome)
+    p["summary"] = fullscreen_live.summary(p)
+    if not options.get("fullscreen_live"):
+        snap = {k: options[k] for k in fullscreen_live.RESTORE_KEYS if k in options}
+        snap["window_fullscreen"] = bool(window_before and window_before.get("fullscreen"))
+        options["fullscreen_restore"] = snap
+    options.update(_CB_CLEARED)
+    options.update(fullscreen_live=True, fullscreen_box=p["box"], fullscreen_capture=p["capture_size"],
+                   fullscreen_plan={k: p[k] for k in ("state", "box", "capture_size", "output", "content", "content_ratio",
+                                                      "scale", "bars", "limitations", "issues", "summary", "filter",
+                                                      "chrome_checked", "zoom_ui")}
+                   | {"at": time.time()})
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], options, source.get("account_id"))
+    await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+    if _framing_key(options) != was_filter:
+        control.note_encoder_filter_changed()
+    pending = await run_in_threadpool(control.encoder_filter_stale)
+    if live:
+        applies = ("The live stream keeps its current framing - restarting it would interrupt viewers, so that is never "
+                   "done automatically. Fullscreen Live applies at the next authorized start (or an authorized restart).")
+    else:
+        applies = "Ready: the next Go Live uses this framing."
+    db.audit(session["username"], "zoom_fullscreen_live",
+             f"apply state={p['state']} box={p['box']} capture={p['capture_size']} live={live} pending_restart={pending}",
+             deps.client_ip(request))
+    return {"ok": True, "action": "apply", "state": p["state"], "message": p["summary"], "applies": applies,
+            "plan": p, "window": {"before": window_before, "after": window_after, "result": window_result},
+            "measure": {k: measured.get(k) for k in ("ok", "region", "margins", "reason", "samples")},
+            **_fsl_status(options), "encoder_phase": phase, "pending_restart": pending}
+
+
+# ---------------------------------------------------------------- Clean Broadcast (app/clean_broadcast.py)
+# The YouTube frame shows the meeting picture and nothing else: Zoom's title bar, toolbar, frame lines and open side
+# panels are MEASURED on real frames (app/zoom_layout.py) and cut away; the picture is fitted with one uniform scale,
+# never cropped (unless the operator explicitly confirms Fill 16:9 with its exact loss shown). Like Fullscreen Live it
+# never starts, stops or restarts the encoder: framing is baked in at encoder start, so while live a change is saved and
+# reported as pending for the next authorized (V2 Go Live grant) start or restart.
+
+_CB_SETTLE_SECONDS = 1.5
+_CB_FRAMES = 3
+# Explicit "off" values (sources.update_source carries absent keys forward).
+_CB_CLEARED = {"clean_broadcast": False, "clean_filter": "", "clean_capture": "", "clean_plan": None, "clean_restore": None}
+_CB_DEFAULTS = {"clean_policy": "preserve", "clean_background": "blur", "clean_source": "unknown"}
+_CB_REASSERT_SECONDS = 60          # the watcher re-applies fullscreen + raises the meeting window at most this often
+_cb_reassert = {"at": 0.0}
+
+
+def _cb_prefs(options: dict, body: dict | None = None) -> dict:
+    body = body or {}
+    prefs = {k: options.get(k) or v for k, v in _CB_DEFAULTS.items()}
+    if body.get("policy") in clean_broadcast.POLICIES:
+        prefs["clean_policy"] = body["policy"]
+    if body.get("background") in clean_broadcast.BACKGROUNDS:
+        prefs["clean_background"] = body["background"]
+    if body.get("source") in clean_broadcast.SOURCES:
+        prefs["clean_source"] = body["source"]
+    return prefs
+
+
+def _cb_plan(display, layout, prefs) -> dict:
+    p = clean_broadcast.plan(display, _fsl_output_size(), layout, policy=prefs["clean_policy"],
+                             background=prefs["clean_background"], source=prefs["clean_source"])
+    p["summary"] = clean_broadcast.summary(p)
+    p["layout"] = {k: (layout or {}).get(k) for k in ("ok", "size", "bands", "kinds", "content", "reason", "frames")}
+    p["at"] = time.time()
+    return p
+
+
+def _cb_status(options: dict) -> dict:
+    return {"active": bool(options.get("clean_broadcast")), "plan": options.get("clean_plan") or None,
+            "restore_available": bool(options.get("clean_restore")),
+            "prefs": {k[6:]: v for k, v in _cb_prefs(options).items()}}
+
+
+async def _cb_measure(display: tuple[int, int]) -> dict:
+    frames, w, h = await zoom_layout.grab_frames(f"{display[0]}x{display[1]}", _CB_FRAMES)
+    return await asyncio.to_thread(zoom_layout.detect_frames, frames, w, h)
+
+
+def _cb_window_problem(win: dict | None) -> str:
+    """Why the measured screen cannot be trusted as the MEETING (Step A.1, 2026-11-08: Zoom's home window was raised over
+    a webinar and measured as "clean"). "" = fine. Flags an older script does not report (None) are not held against it."""
+    if win is None:
+        return "No Zoom meeting window was found - join the meeting first."
+    if win.get("meeting") is False:
+        return "Only Zoom's home window is open - no meeting window to frame."
+    if win.get("top") is False:
+        return ("Another Zoom window (e.g. the home window) is on top of the meeting, so the screen does not show the "
+                "meeting. Press Clean Broadcast again.")
+    return ""
+
+
+def _cb_joined_via_web() -> bool:
+    try:
+        return control.read_current_source().get("ZOOM_JOIN_VIA") == "web"
+    except Exception:
+        return False
+
+
+async def _cb_measure_meeting(display: tuple[int, int]) -> dict:
+    """Measure, then confirm the meeting window was what the screen showed; otherwise the measurement is not trusted.
+    A meeting joined in Zoom's WEB client runs in the kiosk browser (no desktop Zoom window to check): the frame
+    measurement alone decides, and the plan says so."""
+    layout = await _cb_measure(display)
+    if await run_in_threadpool(_cb_joined_via_web):
+        return {**layout, "web_client": True}
+    problem = _cb_window_problem(await run_in_threadpool(control.zoom_window_geometry))
+    return {"ok": False, "reason": problem, "window_problem": True} if problem else layout
+
+
+async def _cb_context():
+    active = sources_mod.get_active_source()
+    if not active or active["type"] != "zoom":
+        raise HTTPException(status_code=400, detail="Clean Broadcast frames a Zoom meeting - the active source isn't one. "
+                                                    "Pick the Zoom source first.")
+    source = sources_mod.get_source(active["id"])
+    return active, source, dict(source.get("options") or {})
+
+
+async def _cb_save(active, source, options, was_filter) -> bool:
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], options,
+                            source.get("account_id"))
+    await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+    if _framing_key(options) != was_filter:
+        control.note_encoder_filter_changed()
+    return await run_in_threadpool(control.encoder_filter_stale)
+
+
+async def _encoder_phase() -> str:
+    try:
+        return (await run_in_threadpool(control.unit_show, "ffmpeg-stream"))["phase"]
+    except control.ControlError:
+        return "UNKNOWN"
+
+
+@app.get("/api/zoom/clean-broadcast")
+async def api_zoom_clean_broadcast_state(request: Request):
+    """Read-only: saved Clean Broadcast state/plan, encoder phase, whether the running encoder is behind, CPU load."""
+    deps.require_session_api(request)
+    active = sources_mod.get_active_source()
+    zoom = bool(active and active["type"] == "zoom")
+    options = ((sources_mod.get_source(active["id"]) or {}).get("options") or {}) if zoom else {}
+    import psutil
+    return {"zoom_source": zoom, **_cb_status(options), "encoder_phase": await _encoder_phase(),
+            "pending_restart": await run_in_threadpool(control.encoder_filter_stale),
+            "cpu_percent": psutil.cpu_percent(interval=None), "display": await preview._display_size(),
+            "output": "%dx%d" % _fsl_output_size(), **(await _output_runtime())}
+
+
+_OUTPUT_ENV_KEYS = ("RESOLUTION", "FPS", "VIDEO_BITRATE", "X264_PRESET", "DISPLAY_SIZE")
+
+
+async def _output_runtime() -> dict:
+    """Encoder settings + live encoder health for the Output page (no secrets: only the non-secret .env keys)."""
+    try:
+        env = await run_in_threadpool(env_store.read_parsed)
+    except Exception:
+        env = {}
+    try:
+        show = await run_in_threadpool(control.unit_show, "ffmpeg-stream")
+        progress = stats.ffmpeg_progress(show)
+    except Exception:
+        progress = None
+    return {"settings": {k: env.get(k, "") for k in _OUTPUT_ENV_KEYS}, "encoder": progress,
+            "output_presets": config.OUTPUT_PRESETS}
+
+
+@app.post("/api/zoom/clean-broadcast")
+async def api_zoom_clean_broadcast(request: Request):
+    """{action: "apply" | "settings" | "restore", policy?, background?, source?, confirm_crop?}. Window + framing only."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_clean_broadcast", max_calls=8, window_seconds=30)
+    body = await request.json()
+    action = str(body.get("action", "")).strip().lower()
+    if action not in ("apply", "settings", "restore"):
+        raise HTTPException(status_code=400, detail="action must be apply, settings or restore")
+    active, source, options = await _cb_context()
+    was_filter = _framing_key(options)
+    phase = await _encoder_phase()
+    live = phase in (control.PHASE_LIVE, control.PHASE_STARTING)
+    ip = deps.client_ip(request)
+
+    if action == "restore":
+        snap = options.get("clean_restore")
+        if not options.get("clean_broadcast") and not snap:
+            return {"ok": True, "action": "restore", "message": "Already on the original framing.", **_cb_status(options),
+                    "encoder_phase": phase, "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+        snap = snap or {}
+        for k in clean_broadcast.RESTORE_KEYS:
+            if k in snap:
+                options[k] = snap[k]
+            else:
+                options.pop(k, None)
+        options.update(_CB_CLEARED)
+        window = None
+        if snap.get("window_fullscreen") is False and not options.get("meeting_only") and not options.get("fullscreen_live"):
+            try:
+                window = await run_in_threadpool(control.zoom_set_meeting_only, False)
+            except control.ControlError as exc:
+                window = {"applied": False, "note": str(exc)}
+        pending = await _cb_save(active, source, options, was_filter)
+        db.audit(session["username"], "zoom_clean_broadcast", f"restore live={live} pending_restart={pending}", ip)
+        msg = "Original framing restored."
+        if pending:
+            msg += " The live stream keeps Clean Broadcast framing until its next authorized start or restart."
+        return {"ok": True, "action": "restore", "message": msg, "window": window, **_cb_status(options),
+                "encoder_phase": phase, "pending_restart": pending}
+
+    prefs = _cb_prefs(options, body)
+    display = fullscreen_live.parse_size(await preview._display_size()) or (1920, 1080)
+    window = None
+    if action == "settings":
+        saved = options.get("clean_plan") or {}
+        layout = saved.get("layout") if options.get("clean_broadcast") else None
+        if not layout:                                 # not active yet: just remember the choices
+            options.update(prefs)
+            await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"],
+                                    options, source.get("account_id"))
+            return {"ok": True, "action": "settings", "message": "Saved - used when Clean Broadcast is switched on.",
+                    **_cb_status(options), "encoder_phase": phase,
+                    "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+        if layout.get("size") != "%dx%d" % display:
+            layout = None                              # the desktop changed since measuring: re-measure below
+    else:
+        layout = None
+    if layout is None:
+        window_before = await run_in_threadpool(control.zoom_window_geometry)
+        try:
+            window = await run_in_threadpool(control.zoom_set_meeting_only, True)
+        except control.ControlError as exc:
+            window = {"applied": False, "note": str(exc)}
+        if window.get("applied"):
+            await asyncio.sleep(_CB_SETTLE_SECONDS)
+        layout = await _cb_measure_meeting(display)
+        window = {"before": window_before, "result": window}
+    p = _cb_plan(display, layout, prefs)
+
+    kept = False
+    old = options.get("clean_plan") or {}
+    if (p["policy"] != "fit" and not p["verified"] and options.get("clean_broadcast") and old.get("verified")
+            and old.get("display") == p["display"]):
+        # Unsure right now (a panel open, a dark screen) but a verified framing exists: keep it rather than fall back.
+        kept = True
+        reason = p["warnings"][0]["text"] if p["warnings"] else ""
+        p = dict(old, kept_reason=reason)
+    elif p["crop"]["lost_pct"] > 0 and not body.get("confirm_crop"):
+        return JSONResponse(status_code=409, content={
+            "ok": False, "needs_confirm": True, "plan": p,
+            "detail": f"Fill 16:9 would cut {p['crop']['lost_pct']}% of the picture. Confirm to use it, or keep Preserve."})
+
+    if not options.get("clean_broadcast"):
+        snap = {k: options[k] for k in clean_broadcast.RESTORE_KEYS if k in options}
+        wb = (window or {}).get("before")
+        snap["window_fullscreen"] = bool(wb and wb.get("fullscreen"))
+        options["clean_restore"] = snap
+    options.update(prefs)
+    options.update(_FSL_CLEARED)                       # Clean Broadcast replaces Fullscreen Live / Meeting-only
+    options.update(meeting_only=False, meeting_only_auto=False, meeting_only_region="")
+    options.update(clean_broadcast=True, clean_filter=p["filter"], clean_capture=p["capture_size"], clean_plan=p)
+    pending = await _cb_save(active, source, options, was_filter)
+    if live:
+        applies = ("The live stream keeps its current framing - restarting it would interrupt viewers, so that is never "
+                   "done automatically. Clean Broadcast applies at the next authorized start (or an authorized restart).")
+    else:
+        applies = "Ready: the next Go Live uses this framing."
+    db.audit(session["username"], "zoom_clean_broadcast",
+             f"{action} state={p['state']} content={p['content']} filter={p['filter'] or '-'} kept={kept} live={live} "
+             f"pending_restart={pending}", ip)
+    msg = p["summary"] if not kept else ("Measurement uncertain right now - kept the last verified framing. "
+                                         + p.get("kept_reason", ""))
+    return {"ok": True, "action": action, "state": p["state"], "message": msg, "applies": applies, "kept": kept,
+            "plan": p, "window": window, **_cb_status(options), "encoder_phase": phase, "pending_restart": pending}
+
+
+@app.get("/api/zoom/clean-broadcast/preview.jpg")
+async def api_zoom_clean_broadcast_preview(request: Request, view: str = "output", policy: str = "",
+                                           background: str = ""):
+    """One frame of the screen now, framed EXACTLY like the broadcast would be (the saved plan's filter, or - with
+    policy/background - the same measured layout re-planned with those choices, so a choice can be previewed before it
+    is saved). view=screen returns the whole desktop instead. One short nice-19 grab; never touches the encoder."""
+    session = deps.require_session_api(request)
+    deps.require_rate_limit(session, "zoom_clean_preview", max_calls=20, window_seconds=60)
+    size = await preview._display_size()
+    vf = "scale=960:-2"
+    if view != "screen":
+        active = sources_mod.get_active_source()
+        options = ((sources_mod.get_source(active["id"]) or {}).get("options") or {}) if active and active["type"] == "zoom" else {}
+        plan = options.get("clean_plan") or {}
+        flt = options.get("clean_filter") if options.get("clean_broadcast") else ""
+        if (policy or background) and plan.get("layout"):
+            prefs = _cb_prefs(options, {"policy": policy, "background": background})
+            flt = _cb_plan(fullscreen_live.parse_size(size) or (1920, 1080), plan["layout"], prefs)["filter"]
+        if flt and clean_broadcast.safe_filter(flt) and (plan.get("capture_size") in (None, size)):
+            vf = f"{flt},scale=960:-2"
+    argv = ["/usr/bin/nice", "-n", "19", "/usr/bin/ionice", "-c", "3", "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-f", "x11grab", "-video_size", size, "-draw_mouse", "0", "-i", config.DISPLAY_NUM, "-frames:v", "1",
+            "-vf", vf, "-q:v", "4", "-f", "mjpeg", "-"]
+    try:
+        proc = await asyncio.create_subprocess_exec(*argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except (asyncio.TimeoutError, FileNotFoundError, OSError):
+        out = b""
+    if not out:
+        raise HTTPException(status_code=503, detail="No frame could be read from the screen right now.")
+    return Response(content=out, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+_cb_pending: dict = {"content": None, "count": 0}
+
+
+async def _cb_reassert_window() -> None:
+    """Keep Zoom's meeting window fullscreen and on top while Clean Broadcast is on: after a rejoin, a view change or a
+    screen share starting/stopping Zoom may un-fullscreen it or put another window over it. At most once a minute,
+    desktop client only, never touches the encoder."""
+    if time.time() - _cb_reassert["at"] < _CB_REASSERT_SECONDS or await run_in_threadpool(_cb_joined_via_web):
+        return
+    win = await run_in_threadpool(control.zoom_window_geometry)
+    if not win or win.get("meeting") is not True or (win.get("fullscreen") and win.get("top") is not False):
+        return
+    _cb_reassert["at"] = time.time()
+    try:
+        r = await run_in_threadpool(control.zoom_set_meeting_only, True)
+    except control.ControlError as exc:
+        r = {"applied": False, "note": str(exc)}
+    db.audit(None, "zoom_clean_broadcast_reassert",
+             f"fullscreen={win.get('fullscreen')} top={win.get('top')} applied={r.get('applied')}")
+
+
+async def _cb_watch_tick(active: dict, options: dict) -> None:
+    """Clean Broadcast: when Zoom's layout really changed (a confident measurement, seen twice in a row, differing by more
+    than 16 px - e.g. a panel was closed), re-plan for the NEXT encoder start. Uncertain measurements change nothing.
+    It never restarts the encoder."""
+    display = fullscreen_live.parse_size(await preview._display_size())
+    if not display:
+        return
+    await _cb_reassert_window()
+    layout = await _cb_measure_meeting(display)
+    if not layout.get("ok"):
+        _cb_pending.update(content=None, count=0)
+        return
+    old = fullscreen_live.parse_box(((options.get("clean_plan") or {}).get("layout") or {}).get("content"))
+    new = tuple(layout["content"])
+    if old and not framing.changed_materially("%d:%d:%d:%d" % old, "%d:%d:%d:%d" % new):
+        _cb_pending.update(content=None, count=0)
+        return
+    if _cb_pending["content"] == new:
+        _cb_pending["count"] += 1
+    else:
+        _cb_pending.update(content=new, count=1)
+    if _cb_pending["count"] < 2:
+        return
+    _cb_pending.update(content=None, count=0)
+    source = sources_mod.get_source(active["id"])
+    opts = dict(source.get("options") or {})
+    if not opts.get("clean_broadcast"):
+        return
+    p = _cb_plan(display, layout, _cb_prefs(opts))
+    if p["crop"]["lost_pct"] > 0 and (opts.get("clean_plan") or {}).get("crop", {}).get("lost_pct", 0) == 0:
+        return                                           # never start cutting the picture without the operator
+    was = opts.get("clean_filter")
+    opts.update(clean_filter=p["filter"], clean_capture=p["capture_size"], clean_plan=p)
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], opts, source.get("account_id"))
+    await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+    control.note_encoder_filter_changed()
+    db.audit(None, "zoom_clean_broadcast_relayout", f"content={p['content']} filter={p['filter'] or '-'} (was {was or '-'})")
+
+
+@app.get("/api/zoom/framing")
+async def api_zoom_framing(request: Request):
+    """Read-only: measure the real screen NOW (one ~2 s low-priority ffmpeg grab) and report the black borders, the
+    saved Fit/Auto settings and the exact filter the encoder would use. Changes nothing."""
+    session = deps.require_session_api(request)
+    deps.require_rate_limit(session, "zoom_framing", max_calls=6, window_seconds=30)
+    active = sources_mod.get_active_source()
+    options = (active or {}).get("options") or {}
+    m = await framing.measure()
+    try:
+        w, h = (int(v) for v in m["size"].split("x"))
+        flt = preview.meeting_only_filter(w, h, "fill" if options.get("meeting_only_fit") == "fill" else "fit", 56, 96,
+                                          m.get("region") if options.get("meeting_only_auto") else None)
+    except ValueError:
+        flt = ""
+    try:
+        crop = framing.fill_crop((w, h), 56, 96, m.get("region") if options.get("meeting_only_auto") else None, (w, h))
+    except (ValueError, NameError):
+        crop = None
+    return {"fill_crop": crop, "fill_warn": bool(crop and crop["lost_pct"] > framing.FILL_WARN_PCT),
+            "measure": m, "meeting_only": bool(options.get("meeting_only")), "fit": options.get("meeting_only_fit", "fit"),
+            "auto": bool(options.get("meeting_only_auto")), "saved_region": options.get("meeting_only_region") or "",
+            "filter": flt, "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
+
+
+_framing_pending: dict = {"region": None, "count": 0}
+
+
+async def _framing_watch_tick() -> None:
+    """One step of the Auto-framing watcher: while Meeting-only + Auto are on for the active Zoom source, re-measure and,
+    when the picture's black borders changed (twice in a row, by more than 16 px), store the new area so the NEXT encoder
+    start uses it and the UI offers "Restart to apply". It never restarts the encoder by itself."""
+    active = sources_mod.get_active_source()
+    options = (active or {}).get("options") or {}
+    if active and active["type"] == "zoom" and options.get("clean_broadcast"):
+        await _cb_watch_tick(active, options)
+        return
+    if active and active["type"] == "zoom" and options.get("fullscreen_live"):
+        await _fsl_watch_tick(active, options)
+        return
+    if not active or active["type"] != "zoom" or not options.get("meeting_only") or not options.get("meeting_only_auto"):
+        _framing_pending.update(region=None, count=0)
+        return
+    m = await framing.measure()
+    if not m.get("ok"):
+        return                                           # blank/dark screen or no frame: keep what we have
+    new = m.get("region") or ""
+    current = options.get("meeting_only_region") or ""
+    if not framing.changed_materially(current, new):
+        _framing_pending.update(region=None, count=0)
+        return
+    if _framing_pending["region"] is not None and not framing.changed_materially(_framing_pending["region"], new):
+        _framing_pending["count"] += 1
+    else:
+        _framing_pending.update(region=new, count=1)
+    if _framing_pending["count"] < 2:
+        return
+    _framing_pending.update(region=None, count=0)
+    source = sources_mod.get_source(active["id"])
+    opts = dict(source.get("options") or {})
+    opts["meeting_only_region"] = new
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], opts, source.get("account_id"))
+    await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+    control.note_encoder_filter_changed()
+    db.audit(None, "zoom_framing_auto", f"region={new or '-'} (was {current or '-'})")
+
+
+_fsl_pending: dict = {"content": None, "count": 0}
+
+
+async def _fsl_watch_tick(active: dict, options: dict) -> None:
+    """Fullscreen Live: if the meeting now shows content OUTSIDE the saved box (a wider share, a new layout), grow the
+    box to cover old + new content (seen twice in a row) for the NEXT encoder start. Only ever grows - a box can never
+    start cropping content that appeared earlier - and it never restarts the encoder."""
+    display = fullscreen_live.parse_size(await preview._display_size())
+    box = fullscreen_live.parse_box(options.get("fullscreen_box"))
+    if not display or not box:
+        return
+    m = await framing.measure(f"{display[0]}x{display[1]}", 0, 0)
+    if not m.get("ok"):
+        return
+    new = fullscreen_live.parse_box(m.get("region")) or (0, 0, display[0], display[1])
+    bx, by, bw, bh = box
+    nx, ny, nw, nh = new
+    if nx >= bx and ny >= by and nx + nw <= bx + bw and ny + nh <= by + bh:
+        _fsl_pending.update(content=None, count=0)
+        return
+    old = fullscreen_live.parse_box((options.get("fullscreen_plan") or {}).get("content")) or box
+    ux, uy = min(old[0], nx), min(old[1], ny)
+    union = (ux, uy, max(old[0] + old[2], nx + nw) - ux, max(old[1] + old[3], ny + nh) - uy)
+    if _fsl_pending["content"] == union:
+        _fsl_pending["count"] += 1
+    else:
+        _fsl_pending.update(content=union, count=1)
+    if _fsl_pending["count"] < 2:
+        return
+    _fsl_pending.update(content=None, count=0)
+    output = await run_in_threadpool(_fsl_output_size)
+    p = fullscreen_live.plan(display, output, output, None, {"ok": True, "region": "%d:%d:%d:%d" % union})
+    p["summary"] = fullscreen_live.summary(p)
+    source = sources_mod.get_source(active["id"])
+    opts = dict(source.get("options") or {})
+    if not opts.get("fullscreen_live"):
+        return
+    old_box = opts.get("fullscreen_box")
+    opts.update(fullscreen_box=p["box"], fullscreen_plan={**(opts.get("fullscreen_plan") or {}), "box": p["box"],
+                "content": p["content"], "content_ratio": p["content_ratio"], "scale": p["scale"], "bars": p["bars"],
+                "limitations": p["limitations"], "summary": p["summary"], "filter": p["filter"], "state": p["state"],
+                "at": time.time()})
+    await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"], opts, source.get("account_id"))
+    await run_in_threadpool(control.write_current_source, sources_mod.get_source(active["id"]))
+    control.note_encoder_filter_changed()
+    db.audit(None, "zoom_fullscreen_live_grow", f"box={p['box']} (was {old_box}) content={p['content']}")
+
+
+async def _framing_watch_loop() -> None:
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await _framing_watch_tick()
+        except Exception:
+            pass                                          # a failed measurement must never take the dashboard down
+
+
+@app.post("/api/zoom/reset")
+async def api_zoom_reset(request: Request):
+    """Reset Zoom window: dismiss stale dialogs, and if Zoom is still
+    stuck, quit it to the slate. The encoder is never touched."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_reset", max_calls=4, window_seconds=30)
+    try:
+        result = await run_in_threadpool(control.zoom_reset)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_reset",
+             f"dismissed={len(result.get('dismissed', []))} stopped={result.get('stopped')}", deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/clean-feed")
+async def api_zoom_clean_feed_post(request: Request):
+    """Instant one-click clean-feed trigger: forces zero-controls and removes black borders over CDP."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_clean_feed", max_calls=20, window_seconds=30)
+    from . import zoom_web, telegram
+    result = await zoom_web.apply_cleanfeed_async()
+    db.audit(session["username"], "zoom_clean_feed", f"ok={result.get('ok')}", deps.client_ip(request))
+    if result.get("ok"):
+        telegram.alert_clean_feed_triggered()
+    return result
+
+
+@app.post("/api/zoom/parse")
+async def api_zoom_parse(request: Request):
+    """Smart paste: whatever was pasted (link, personal link, registration
+    page, meeting ID, personal room URL, zoommtg:// deep link, or a whole
+    invite) -> what was understood, with warnings, for the operator to
+    confirm or correct. Secrets come back redacted (url_redacted,
+    has_passcode); the raw url/passcode are echoed only so the form can
+    submit them straight back to POST /api/sources over the same session.
+    Personal rooms are resolved through Zoom's own redirect."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_parse", max_calls=20, window_seconds=30)
+    body = await request.json()
+    text = str(body.get("text", ""))[:20000]
+    passcode = str(body.get("passcode", "") or "")[:128]
+    parsed = zoomlink.parse_any(text, passcode)
+    if parsed.get("needs_resolve") and parsed.get("url"):
+        try:
+            r = await run_in_threadpool(zoomlink.resolve_vanity, parsed["url"])
+            parsed.update({"vanity_url": parsed["url"], "url": r["url"], "meeting_id": r["meeting_id"],
+                           "meeting_id_formatted": zoomlink.format_meeting_id(r["meeting_id"]),
+                           "url_redacted": zoomlink.redact_url(r["url"]), "needs_resolve": False,
+                           "has_passcode": bool(parsed.get("passcode")) or r["has_pwd"], "ok": True})
+            parsed["warnings"].append("Personal room resolved to its current meeting ID. If the host changes the room's PMI, re-paste the room URL.")
+        except (zoomlink.ZoomLinkError, Exception) as exc:  # network errors included
+            parsed["errors"].append(str(exc)[:300] if isinstance(exc, zoomlink.ZoomLinkError) else "Couldn't reach zoom.us to resolve the room right now.")
+            parsed["ok"] = False
+    db.audit(session["username"], "zoom_parse", f"{parsed.get('input_kind')} ok={parsed.get('ok')}", deps.client_ip(request))
+    return parsed
+
+
+@app.post("/api/test-recording")
+async def api_test_recording(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    result = await run_in_threadpool(control.run_test_recording)
+    db.audit(session["username"], "test_recording", ip=deps.client_ip(request))
+    return result
+
+
+@app.get("/api/test-recording/download")
+async def api_test_recording_download(request: Request):
+    deps.require_session_api(request)
+    if not config.LATEST_TEST_RECORDING.exists():
+        raise HTTPException(status_code=404, detail="no test recording yet")
+    return FileResponse(config.LATEST_TEST_RECORDING, filename="test-recording.mp4", media_type="video/mp4")
+
+
+@app.post("/api/reboot")
+async def api_reboot(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "reboot", max_calls=2, window_seconds=300)
+    body = await request.json()
+    if body.get("confirm") != "REBOOT":
+        raise HTTPException(status_code=400, detail="confirmation token required")
+    # Re-checked server-side, not just UI-gated: the "Reboot" button being
+    # enabled only reflects what readiness looked like when the Settings
+    # page last polled it - something could have changed in between.
+    checks = await run_in_threadpool(control.reboot_readiness)
+    if not all(c["ok"] for c in checks):
+        return JSONResponse({"error": "Pre-reboot checks failed", "checks": checks}, status_code=409)
+    db.audit(session["username"], "reboot_vps", ip=deps.client_ip(request))
+    await run_in_threadpool(control.reboot_vps)
+    return {"ok": True}
+
+
+_restart_all_lock = threading.Lock()
+
+
+@app.get("/api/system/readiness")
+async def api_system_readiness(request: Request):
+    deps.require_session_api(request)
+    checks = await run_in_threadpool(control.reboot_readiness)
+    return {"checks": checks, "ok": all(c["ok"] for c in checks)}
+
+
+@app.post("/api/system/restart-all")
+async def api_system_restart_all(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "system_restart_all", max_calls=2, window_seconds=60)
+    # Non-blocking acquire rather than reading the progress flag, so two
+    # requests landing together can't both start a full restart. Held until
+    # the worker thread finishes (or released right here if we bail out).
+    if not _restart_all_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="A restart is already in progress")
+    started = False
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        stream_info = await run_in_threadpool(control.unit_show, "ffmpeg-stream")
+        if stream_info["phase"] == control.PHASE_LIVE and not body.get("confirm_live"):
+            raise HTTPException(status_code=409, detail="Stream is live - confirm to restart anyway")
+        db.audit(session["username"], "system_restart_all", ip=deps.client_ip(request))
+
+        def _run() -> None:
+            try:
+                control.full_restart()
+            finally:
+                _restart_all_lock.release()
+
+        # Fire-and-forget: full_restart() ends by restarting dashboard.service
+        # itself, which tears this process down - there is no response to wait
+        # for by that point, so the frontend polls /api/system/restart-progress
+        # and then /api/state instead of awaiting this request's own body.
+        threading.Thread(target=_run, daemon=True).start()
+        started = True
+        return {"ok": True, "started": True}
+    finally:
+        if not started:
+            _restart_all_lock.release()
+
+
+@app.get("/api/system/restart-progress")
+async def api_system_restart_progress(request: Request):
+    deps.require_session_api(request)
+    return control.restart_progress()
+
+
+# ---------------------------------------------------------------- api: config
+
+@app.get("/api/config")
+async def api_config_get(request: Request):
+    deps.require_session_api(request)
+    return env_store.masked_view()
+
+
+@app.post("/api/config")
+async def api_config_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    updates = await request.json()
+    try:
+        units = await run_in_threadpool(env_store.write_updates, updates)
+    except (env_store.ValidationError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "config_update", ",".join(sorted(updates.keys())), deps.client_ip(request))
+    return {"units_to_restart": units}
+
+
+@app.post("/api/config/apply-restarts")
+async def api_config_apply_restarts(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    units = body.get("units", [])
+    if set(units) == set(config.UNIT_ORDER):
+        results = await run_in_threadpool(control.pipeline_restart)      # leaves the encoder stopped (see pipeline_start)
+    else:
+        bad = [u for u in units if u not in config.ALLOWED_UNITS]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"unknown units: {bad}")
+        results = [(control.unit_action(u, "restart") if u != "ffmpeg-stream" else
+                    {"ok": False, "unit": u, "verb": "restart", "stderr": "not restarted here - the encoder only starts "
+                     "through Go Live with a confirmation", "needs_go_live": True}) for u in units]
+    db.audit(session["username"], "apply_restarts", ",".join(units), deps.client_ip(request))
+    return {"results": results}
+
+
+@app.post("/api/config/vnc-password")
+async def api_config_vnc_password(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    new_password = str(body.get("new_password", ""))
+    try:
+        result = await run_in_threadpool(control.rotate_vnc_password, new_password)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "vnc_password_rotated", ip=deps.client_ip(request))
+    return result
+
+
+@app.post("/api/config/extract-zoom-link")
+async def api_extract_zoom_link(request: Request):
+    deps.require_session_api(request)
+    body = await request.json()
+    meeting_id, passcode = env_store.extract_zoom_id_passcode(str(body.get("link", "")))
+    return {"meeting_id": meeting_id, "passcode": passcode}
+
+
+# ---------------------------------------------------------------- api: studio
+
+@app.get("/api/studio/stream-key/reveal")
+async def api_studio_stream_key_reveal(request: Request):
+    """The YouTube RTMP Ingest URL and Stream Key for an explicit reveal/copy tap.
+    Rate-limited and audited; never cached."""
+    session = deps.require_session_api(request)
+    deps.require_rate_limit(session, "studio_key_reveal", max_calls=10, window_seconds=60)
+    parsed_env = env_store.read_parsed()
+    yt_key = parsed_env.get("YT_STREAM_KEY", "")
+    db.audit(session["username"], "studio_key_reveal", "", deps.client_ip(request))
+    return JSONResponse({
+        "stream_key": yt_key,
+        "rtmp_url": "rtmps://a.rtmps.youtube.com:443/live2",
+    }, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/studio/stream-key")
+async def api_studio_stream_key_save(request: Request):
+    """Updates YT_STREAM_KEY in .env via write-env.sh and returns units needing restart."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "studio_key_update", max_calls=5, window_seconds=60)
+    data = await request.json()
+    new_key = str(data.get("stream_key", "")).strip()
+    if not new_key:
+        raise HTTPException(status_code=400, detail="Stream key cannot be empty")
+    try:
+        units = await run_in_threadpool(env_store.write_updates, {"YT_STREAM_KEY": new_key})
+    except (env_store.ValidationError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "studio_stream_key_update", f"ends in {new_key[-4:] if len(new_key)>=4 else 'key'}", deps.client_ip(request))
+    return {
+        "ok": True,
+        "units_to_restart": units,
+        "hint": f"••••••••••••{new_key[-4:]}" if len(new_key) >= 4 else "Configured",
+    }
+
+
+@app.get("/api/studio/settings")
+async def api_studio_settings_get(request: Request):
+    deps.require_session_api(request)
+    return {
+        "video_id": db.get_setting("yt_studio_video_id", "") or "",
+        "watch_url": db.get_setting("yt_studio_watch_url", "") or "",
+        "control_room_url": db.get_setting("yt_studio_control_room_url", "https://studio.youtube.com/channel/live/livestreaming") or "https://studio.youtube.com/channel/live/livestreaming",
+    }
+
+
+@app.post("/api/studio/settings")
+async def api_studio_settings_save(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    data = await request.json()
+    video_id = str(data.get("video_id", "")).strip()
+    watch_url = str(data.get("watch_url", "")).strip()
+    control_room_url = str(data.get("control_room_url", "")).strip()
+
+    if video_id:
+        yt_match = re.search(r"(?:v=|\/live\/|\/watch\?v=|\.be\/)([a-zA-Z0-9_-]{11})", video_id)
+        if yt_match:
+            video_id = yt_match.group(1)
+        elif not re.match(r"^[a-zA-Z0-9_-]{8,15}$", video_id):
+            raise HTTPException(status_code=400, detail="Invalid YouTube Video ID format")
+
+    if watch_url and not (watch_url.startswith("https://") or watch_url.startswith("http://")):
+        raise HTTPException(status_code=400, detail="Watch URL must start with http:// or https://")
+
+    db.set_setting("yt_studio_video_id", video_id)
+    if watch_url:
+        db.set_setting("yt_studio_watch_url", watch_url)
+    elif video_id:
+        db.set_setting("yt_studio_watch_url", f"https://www.youtube.com/watch?v={video_id}")
+    if control_room_url:
+        db.set_setting("yt_studio_control_room_url", control_room_url)
+
+    db.audit(session["username"], "studio_settings_update", video_id, deps.client_ip(request))
+    return {
+        "ok": True,
+        "video_id": video_id,
+        "watch_url": db.get_setting("yt_studio_watch_url", ""),
+        "control_room_url": db.get_setting("yt_studio_control_room_url", "https://studio.youtube.com/channel/live/livestreaming"),
+    }
+
+
+# ---------------------------------------------------------------- api: text overlay studio (Part 2)
+
+@app.get("/api/overlay")
+async def api_overlay_get(request: Request):
+    deps.require_session_api(request)
+    from . import overlay
+    return overlay.get_overlay_state()
+
+
+def _apply_watermark_config(updated: dict) -> None:
+    """Writes the encoder-consumed config (WATERMARK_* in current-source.env). One extra step when the watermark is
+    being shown on a copy-mode direct source: that source is switched to re-encode, because a burned-in filter cannot
+    ride along with stream copy. Only writes files - it never starts, stops or restarts a unit."""
+    active = sources_mod.get_active_source()
+    switched = False
+    if (
+        updated.get("visible")
+        and active
+        and active["type"] == "direct"
+        and (active.get("options") or {}).get("mode") == "copy"
+    ):
+        options = {**(active.get("options") or {}), "mode": "reencode"}
+        sources_mod.update_source(
+            active["id"], active["name"], active["type"], active["url"], options, active.get("account_id"),
+        )
+        active = sources_mod.get_active_source()
+        switched = True
+
+    control.write_watermark_config(updated)
+    if switched and active:
+        # Only for that switch. Re-applying the source on every watermark save would also reset a Zoom source's
+        # rejoin counter (ZOOM_JOIN_EPOCH) and re-resolve its URL - a cosmetic setting must not touch the source.
+        control.write_current_source(active)
+
+
+_overlay_bg_tasks: set = set()          # keeps background clean-up tasks referenced until they finish
+
+
+async def _sync_watermark(updated: dict) -> dict:
+    """Pushes the saved settings to the encoder config and reports honestly: {"pipeline_synced", "sync_error"}.
+    A failed write is not hidden - the settings ARE saved, and every authorized start re-reads them (see
+    control.write_broadcast_auth), but the operator is told the pipeline could not be updated right now."""
+    try:
+        await run_in_threadpool(_apply_watermark_config, updated)
+        return {"pipeline_synced": True, "sync_error": ""}
+    except Exception as exc:                                        # noqa: BLE001
+        logger.warning("failed to apply watermark config to the pipeline: %s", exc)
+        return {"pipeline_synced": False,
+                "sync_error": "Saved, but the streaming pipeline could not be updated right now: " + str(exc)[:200]}
+
+
+async def _overlay_response(updated: dict, rejected: dict | None = None, sync: dict | None = None) -> dict:
+    from . import overlay
+    status = await run_in_threadpool(overlay.live_status, updated)
+    return {
+        "ok": True, "state": updated, "rejected": rejected or {}, **(sync or {}),
+        "status": status, "requires_restart": status["requires_restart"],
+        "message": status["message"],
+    }
+
+
+@app.post("/api/overlay")
+async def api_overlay_save(request: Request):
+    """Saves the watermark settings (everything except ON/OFF and the image file). Never starts or restarts anything:
+    while a broadcast is running the change is queued for the next stream and the response says so."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="expected a JSON object")
+    from . import overlay
+    try:
+        updated, rejected = await run_in_threadpool(overlay.save_overlay_state, data)
+    except overlay.OverlayError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    rejected.pop("visible", None)          # older pages send it along; it is ignored here by design, not an error
+    rejected.pop("image_path", None)
+    sync = await _sync_watermark(updated)
+    db.audit(session["username"], "overlay_update", f"visible={updated.get('visible')}", deps.client_ip(request))
+    return await _overlay_response(updated, rejected, sync)
+
+
+@app.post("/api/overlay/toggle")
+async def api_overlay_toggle(request: Request):
+    """Watermark ON/OFF. Send {"enabled": true|false} to set it explicitly (idempotent); with no body it flips.
+    Like every watermark change this only saves: a running broadcast is not touched."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    from . import overlay
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    enabled = body.get("enabled") if isinstance(body, dict) else None
+    if enabled is not None and not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false")
+    try:
+        if enabled is None:
+            updated = await run_in_threadpool(overlay.toggle_overlay_visibility)
+        else:
+            updated = await run_in_threadpool(overlay.set_enabled, enabled)
+    except overlay.OverlayError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+    # Best-effort clean-up of the retired DOM watermark, in the background: the switch must never wait on a kiosk
+    # browser that may not be running (a DevTools connection attempt can take seconds to give up).
+    _bg = asyncio.get_running_loop().create_task(overlay.remove_legacy_dom_overlay())
+    _overlay_bg_tasks.add(_bg)
+    _bg.add_done_callback(_overlay_bg_tasks.discard)
+    sync = await _sync_watermark(updated)
+    db.audit(session["username"], "overlay_toggle", f"visible={updated.get('visible')}", deps.client_ip(request))
+    return await _overlay_response(updated, None, sync)
+
+
+@app.get("/api/overlay/status")
+async def api_overlay_status(request: Request):
+    """Saved settings vs. what the running encoder really drew (read from the encoder's own status record)."""
+    deps.require_session_api(request)
+    from . import overlay
+    return await run_in_threadpool(overlay.live_status)
+
+
+@app.get("/overlay/fonts/{name}")
+async def overlay_font_file(request: Request, name: str):
+    """The installed font file itself, for the preview's @font-face: the preview draws with the very file FFmpeg loads."""
+    deps.require_session_api(request)
+    from . import overlay
+    key = name[:-4] if name.endswith(".ttf") else name
+    entry = next((f for f in overlay.font_catalogue() if f["key"] == key), None)
+    if entry is None or not entry["installed"]:
+        raise HTTPException(status_code=404, detail="font not installed")
+    return FileResponse(overlay.fonts_dir() / entry["file"], media_type="font/ttf",
+                        headers={"Cache-Control": "private, max-age=604800"})
+
+
+@app.post("/api/overlay/image")
+async def api_overlay_image_upload(request: Request):
+    """Uploads a watermark image, stores it under zoombot (ffmpeg needs to
+    read it, and this process runs as the dashboard user - same
+    cross-user bridge as every other zoombot-owned write, see
+    app/control.py's write_watermark_image())."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    from . import control, overlay
+
+    form = await request.form()
+    upload = form.get("image")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(status_code=400, detail="no image file provided")
+    ext = pathlib.Path(getattr(upload, "filename", "") or "").suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(status_code=400, detail="image must be .png, .jpg, .jpeg, or .webp")
+    content = await upload.read()
+    MAX_BYTES = 5 * 1024 * 1024
+    if len(content) > MAX_BYTES:
+        raise HTTPException(status_code=400, detail="image must be 5MB or smaller")
+    if not content:
+        raise HTTPException(status_code=400, detail="the image file is empty")
+
+    try:
+        image_path = await run_in_threadpool(control.write_watermark_image, content, ext)
+    except control.ControlError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:300])
+    updated = await run_in_threadpool(overlay.set_image, image_path)
+    sync = await _sync_watermark(updated)
+    db.audit(session["username"], "overlay_image_upload", f"path={image_path}", deps.client_ip(request))
+    return {**(await _overlay_response(updated, None, sync)), "image_path": image_path}
+
+
+@app.post("/api/overlay/reinject")
+async def api_overlay_reinject(request: Request):
+    """Historical endpoint. The DOM watermark it used to re-inject is retired; it now removes any left-over copy from
+    the kiosk page and returns the real (encoder) status."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    from . import overlay
+    cleaned = await overlay.remove_legacy_dom_overlay()
+    status = await run_in_threadpool(overlay.live_status)
+    db.audit(session["username"], "overlay_reinject", f"connected={cleaned['connected']}, removed={cleaned['removed']}",
+             deps.client_ip(request))
+    return {"ok": True, "status": {**status, **cleaned}}
+
+
+# ---------------------------------------------------------------- api: emergency failover BRB slate (Part 3)
+
+@app.get("/api/slate/brb")
+async def api_slate_brb_get(request: Request):
+    deps.require_session_api(request)
+    from . import slate
+    return slate.get_brb_state()
+
+
+@app.post("/api/slate/brb")
+async def api_slate_brb_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    data = await request.json()
+    action = str(data.get("action", "toggle")).lower()
+    from . import slate
+    if action == "show":
+        state = slate.set_brb_state(True, title=data.get("title"), subtitle=data.get("subtitle"))
+    elif action == "hide":
+        state = slate.set_brb_state(False)
+    elif action == "toggle":
+        state = slate.toggle_brb_state()
+    else:
+        raise HTTPException(status_code=400, detail="action must be show, hide, or toggle")
+    await slate.push_brb_to_kiosk(state)
+    db.audit(session["username"], "slate_brb", f"active={state.get('active')}", deps.client_ip(request))
+    return {"ok": True, "state": state}
+
+
+# ---------------------------------------------------------------- api: local stream recording (Part 5)
+
+@app.get("/api/record")
+async def api_record_get(request: Request):
+    deps.require_session_api(request)
+    try:
+        return await run_in_threadpool(recording.get_status)
+    except Exception:
+        return {"recording": False, "file": "", "duration": 0, "size_mb": 0.0, "free_gb": recording.get_free_disk_gb(), "halted_reason": ""}
+
+
+@app.post("/api/record")
+async def api_record_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    data = await request.json()
+    action = str(data.get("action", "")).lower()
+    if action not in ("start", "stop", "status"):
+        raise HTTPException(status_code=400, detail="action must be start, stop or status")
+    try:
+        if action == "start":
+            result = await run_in_threadpool(recording.record_start)
+        elif action == "stop":
+            result = await run_in_threadpool(recording.record_stop)
+        else:
+            result = await run_in_threadpool(recording.get_status)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], f"record_stream_{action}", "", deps.client_ip(request))
+    return result
+
+
+@app.post("/api/recordings/clean")
+async def api_recordings_clean(request: Request):
+    # POST-only: this deletes recordings. The old GET twin let a plain link
+    # or <img src> trigger it with no CSRF check; nothing in the dashboard
+    # ever used it (config.js posts with the CSRF header).
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "recordings_clean", max_calls=3, window_seconds=60)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    force = bool(body.get("force", False) or body.get("all", False))
+    try:
+        max_age = max(0.0, float(body.get("max_age_hours", 24.0)))
+    except (ValueError, TypeError):
+        max_age = 24.0
+    result = await run_in_threadpool(recording.clean_recordings, max_age_hours=max_age, force=force)
+    db.audit(session["username"], "recordings_clean", f"deleted={result.get('deleted_count')} freed_mb={result.get('freed_mb')}", deps.client_ip(request))
+    return result
+
+
+@app.get("/api/settings/telegram")
+async def api_settings_telegram_get(request: Request):
+    deps.require_session_api(request)
+    return settings_store.masked_settings()
+
+
+@app.post("/api/settings/telegram")
+async def api_settings_telegram_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    updates = await request.json()
+    settings_store.save_settings(updates)
+    db.audit(session["username"], "telegram_settings_update", ip=deps.client_ip(request))
+    return {"ok": True, "settings": settings_store.masked_settings()}
+
+
+@app.post("/api/telegram/test")
+async def api_telegram_test_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    res = await telegram.test_telegram_connection(
+        bot_token=str(data.get("telegram_bot_token", "")),
+        chat_id=str(data.get("telegram_chat_id", "")),
+        api_id=str(data.get("telegram_api_id", "")),
+        api_hash=str(data.get("telegram_api_hash", "")),
+        session_string=str(data.get("telegram_session_string", "")),
+    )
+    db.audit(session["username"], "telegram_test", f"ok={res.get('ok')}", deps.client_ip(request))
+    return res
+
+
+@app.post("/api/settings")
+async def api_settings_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    if "auto_recovery" in body:
+        db.set_setting("auto_recovery", "on" if body["auto_recovery"] else "off")
+    if "webhook_url" in body:
+        db.set_setting("webhook_url", str(body["webhook_url"])[:500])
+    db.audit(session["username"], "settings_update", ip=deps.client_ip(request))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------- api: profiles
+
+@app.get("/api/profiles")
+async def api_profiles_list(request: Request):
+    deps.require_session_api(request)
+    return profiles_mod.list_profiles()
+
+
+@app.post("/api/profiles")
+async def api_profiles_create(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        pid = profiles_mod.create_profile(
+            body.get("name", ""), body.get("zoom_link", ""),
+            body.get("zoom_passcode", ""), body.get("bot_name", "Stream Bot"),
+        )
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "profile_create", body.get("name", ""), deps.client_ip(request))
+    return {"id": pid}
+
+
+@app.put("/api/profiles/{profile_id}")
+async def api_profiles_update(profile_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        profiles_mod.update_profile(
+            profile_id, body.get("name", ""), body.get("zoom_link", ""),
+            body.get("zoom_passcode", ""), body.get("bot_name", "Stream Bot"),
+        )
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "profile_update", str(profile_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.delete("/api/profiles/{profile_id}")
+async def api_profiles_delete(profile_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    profiles_mod.delete_profile(profile_id)
+    db.audit(session["username"], "profile_delete", str(profile_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/profiles/{profile_id}/switch")
+async def api_profiles_switch(profile_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    p = profiles_mod.get_profile(profile_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="profile not found")
+    units = await run_in_threadpool(env_store.write_updates, {
+        "ZOOM_LINK": p["zoom_link"], "ZOOM_PASSCODE": p["zoom_passcode"] or "", "BOT_NAME": p["bot_name"],
+    })
+    db.audit(session["username"], "profile_switch", p["name"], deps.client_ip(request))
+    return {"units_to_restart": units}
+
+
+# ---------------------------------------------------------------- api: sources (Change 1)
+
+@app.get("/api/sources")
+async def api_sources_list(request: Request):
+    deps.require_session_api(request)
+    active = sources_mod.get_active_source()
+    rev = sources_mod.sources_rev()
+    # Cheap poll for the live-sync pages: ?since=<rev> -> {"changed": false}
+    since = request.query_params.get("since")
+    if since is not None and since.isdigit() and int(since) == rev:
+        return {"changed": False, "rev": rev}
+    return {"changed": True, "rev": rev, "sources": sources_mod.list_sources_public(),
+            "active_id": active["id"] if active else None}
+
+
+@app.get("/api/sources/{source_id}/reveal")
+async def api_sources_reveal(source_id: int, request: Request):
+    """The masked secrets of one Zoom source (full link, passcode,
+    personal join link) for an explicit reveal tap. Rate-limited and
+    audited; never cached by the page."""
+    session = deps.require_session_api(request)
+    deps.require_rate_limit(session, "source_reveal", max_calls=10, window_seconds=60)
+    try:
+        secrets = sources_mod.reveal_secrets(source_id)
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "source_reveal", str(source_id), deps.client_ip(request))
+    return JSONResponse(secrets, headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/sources/{source_id}/duplicate")
+async def api_sources_duplicate(source_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        sid = sources_mod.duplicate_source(source_id)
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "source_duplicate", f"{source_id}->{sid}", deps.client_ip(request))
+    return {"id": sid, "source": sources_mod.public_view(sources_mod.get_source(sid))}
+
+
+@app.post("/api/sources/detect-type")
+async def api_sources_detect_type(request: Request):
+    deps.require_session_api(request)
+    body = await request.json()
+    return {"type": sources_mod.detect_type(str(body.get("url", "")))}
+
+
+@app.post("/api/sources/probe")
+async def api_sources_probe(request: Request):
+    deps.require_session_api(request)
+    body = await request.json()
+    url = str(body.get("url", ""))
+    try:
+        validated = await run_in_threadpool(url_security.validate_url, url, "direct")
+    except URLSecurityError as exc:
+        return _api_error(exc)
+    try:
+        result = await probe_mod.probe_url(validated)
+    except probe_mod.ProbeError as exc:
+        return _api_error(exc)
+    return result
+
+
+@app.post("/api/sources")
+async def api_sources_create(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        sid = sources_mod.create_source(
+            body.get("name", ""), body.get("type", ""),
+            body.get("url", ""), body.get("options", {}), body.get("account_id"),
+        )
+    except (env_store.ValidationError, URLSecurityError) as exc:
+        return _api_error(exc)
+    scheduler.load_schedules()
+    db.audit(session["username"], "source_create", str(body.get("name", ""))[:64], deps.client_ip(request))
+    return {"id": sid, "source": sources_mod.public_view(sources_mod.get_source(sid))}
+
+
+@app.put("/api/sources/{source_id}")
+async def api_sources_update(source_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        sources_mod.update_source(
+            source_id, body.get("name", ""), body.get("type", ""),
+            body.get("url", ""), body.get("options", {}), body.get("account_id"),
+        )
+    except (env_store.ValidationError, URLSecurityError) as exc:
+        return _api_error(exc)
+    scheduler.load_schedules()
+    db.audit(session["username"], "source_update", str(source_id), deps.client_ip(request))
+    return {"ok": True, "source": sources_mod.public_view(sources_mod.get_source(source_id))}
+
+
+@app.post("/api/sources/{source_id}/account")
+async def api_sources_set_account(source_id: int, request: Request):
+    """Bind/unbind the Google account (Chrome profile) this source plays
+    or joins as. Takes effect on the next switch to the source."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    s = sources_mod.get_source(source_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="source not found")
+    try:
+        sources_mod.set_account(source_id, body.get("account_id"))
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    applied = False
+    # apply_now: the source is the active web source, so relaunch just the
+    # browser on the new profile. Chrome cannot change user-data-dir in
+    # place; the encoder keeps running (RTMP stays up), viewers see the
+    # page reload. Never automatic while the stream is live - the UI asks.
+    if body.get("apply_now"):
+        active = sources_mod.get_active_source()
+        if active and active["id"] == source_id and s["type"] == "webpage":
+            try:
+                fresh = sources_mod.get_source(source_id)
+                await run_in_threadpool(control.apply_source_config, fresh)
+                await run_in_threadpool(control.unit_action, "browser-source", "restart")
+                applied = True
+            except control.ControlError as exc:
+                return _api_error(exc)
+    db.audit(session["username"], "source_bind_account", f"{source_id}:{body.get('account_id')} applied={applied}", deps.client_ip(request))
+    return {"ok": True, "applied": applied}
+
+
+@app.post("/api/zoom/classify")
+async def api_zoom_classify(request: Request):
+    deps.require_session_api(request)
+    body = await request.json()
+    from . import zoomlink
+    return zoomlink.classify(str(body.get("url", "")))
+
+
+@app.post("/api/sources/{source_id}/registration/open")
+async def api_sources_registration_open(source_id: int, request: Request):
+    """Opens the source's Zoom registration page in an ordinary Chrome
+    window on :99 (bound account's profile, or the 'default' one) for
+    the admin to complete over noVNC. Nothing is filled in for them."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "registration_open", max_calls=4, window_seconds=60)
+    s = sources_mod.get_source(source_id)
+    if not s or s["type"] != "zoom":
+        raise HTTPException(status_code=404, detail="zoom source not found")
+    from . import zoomlink
+    try:
+        zoomlink.validate_registration(s["url"])
+        url = await run_in_threadpool(url_security.validate_url, s["url"], "webpage")
+    except (zoomlink.ZoomLinkError, URLSecurityError) as exc:
+        return _api_error(exc)
+    profile_id = control._account_profile_id(s) or "default"
+    try:
+        if profile_id == "default":
+            await run_in_threadpool(control.account_profile_action, "create", "default")
+        await run_in_threadpool(control.open_url_in_account_profile, profile_id, url)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_registration_open", str(source_id), deps.client_ip(request))
+    return {"ok": True, "profile_id": profile_id}
+
+
+@app.post("/api/sources/{source_id}/join-url")
+async def api_sources_join_url(source_id: int, request: Request):
+    """Save the personal (tk=) join link Zoom issued after registering."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        s = sources_mod.set_zoom_join_url(source_id, str(body.get("join_url", "")))
+        # Close the registration window if it's still open; the profile
+        # used was whichever registration/open picked.
+        profile_id = control._account_profile_id(s) or "default"
+        await run_in_threadpool(control.account_profile_action, "close", profile_id)
+    except env_store.ValidationError as exc:
+        return _api_error(exc)
+    except control.ControlError:
+        pass
+    db.audit(session["username"], "zoom_join_url_saved", str(source_id), deps.client_ip(request))
+    return {"ok": True, "link_kind": s["link_kind"], "join_ready": s["join_ready"], "source": sources_mod.public_view(s)}
+
+
+@app.delete("/api/sources/{source_id}")
+async def api_sources_delete(source_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    sources_mod.delete_source(source_id)
+    scheduler.load_schedules()
+    db.audit(session["username"], "source_delete", str(source_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/sources/{source_id}/switch")
+async def api_sources_switch(source_id: int, request: Request):
+    """Keeps RTMP up whenever possible - see control.start_source() for
+    exactly when it can and can't. Response carries rtmp_dropped /
+    hot_swapped so the UI can say what actually happened."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "source_switch", max_calls=6, window_seconds=30)
+    s = sources_mod.get_source(source_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="source not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    # While LIVE a switch changes what viewers see. The UI confirms first; this makes that confirmation server-enforced
+    # so a stale tab, a script or a mis-tap can't swap the on-air picture without it.
+    if not body.get("confirm_on_air") and await run_in_threadpool(control._ffmpeg_is_up):
+        return JSONResponse({"ok": False, "code": "confirm_on_air",
+                             "error": "The stream is live - switching changes what viewers see. Confirm the switch to continue."},
+                            status_code=409)
+    try:
+        outcome = await run_in_threadpool(control.start_source, s)             # prepares the source; never starts the encoder
+    except control.ControlError as exc:
+        return _api_error(exc)
+    sources_mod.set_active_source_id(source_id)
+    if s["type"] == "zoom":
+        sources_mod.mark_joined(source_id)
+        join_via = "web" if control.producer_unit_for(s) == "browser-source" else "client"
+        _schedule_zoom_followup(s, join_via)
+    db.audit(session["username"], "source_switch",
+             f"{s['name']} hot={outcome['hot_swapped']} dropped={outcome['rtmp_dropped']} "
+             f"encoder_started={outcome.get('encoder_started')}", deps.client_ip(request))
+    return outcome
+
+
+@app.get("/api/sources/{source_id}/switch-preview")
+async def api_sources_switch_preview(source_id: int, request: Request):
+    """What a switch to this source would do to the stream, so the UI can
+    confirm honestly ("will restart the encoder") before doing it."""
+    deps.require_session_api(request)
+    s = sources_mod.get_source(source_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="source not found")
+    old_type = control.read_current_source().get("SOURCE_TYPE", "")
+    ffmpeg_up = await run_in_threadpool(control._ffmpeg_is_up)
+    needs_restart = s["type"] == "direct" or old_type == "direct"
+    return {"ffmpeg_up": ffmpeg_up, "rtmp_would_drop": needs_restart and ffmpeg_up,
+            "join_ready": s.get("join_ready", True), "missing": s.get("missing", [])}
+
+
+# ---------------------------------------------------------------- api: Zoom Google sign-in (Change 2)
+
+@app.get("/api/zoom/account")
+async def api_zoom_account(request: Request):
+    deps.require_session_api(request)
+    heuristic = await run_in_threadpool(control.zoom_session_heuristic)
+    return {
+        "label": db.get_setting("zoom_account_label", ""),
+        "confirmed_signed_in": db.get_setting("zoom_account_signed_in", "0") == "1",
+        "heuristic": heuristic,
+    }
+
+
+@app.post("/api/zoom/account")
+async def api_zoom_account_set(request: Request):
+    """The admin's own confirmation after completing sign-in/out by hand
+    over noVNC - see control.py's module note on why this, not scraped
+    account info, is the authoritative record."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    signed_in = bool(body.get("signed_in"))
+    label = str(body.get("label", ""))[:120]
+    db.set_setting("zoom_account_signed_in", "1" if signed_in else "0")
+    db.set_setting("zoom_account_label", label if signed_in else "")
+    db.audit(session["username"], "zoom_account_update", f"signed_in={signed_in}", deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/zoom/google-signin")
+async def api_zoom_google_signin(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        result = await run_in_threadpool(control.zoom_google_signin)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_google_signin", ip=deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/signout")
+async def api_zoom_signout(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        result = await run_in_threadpool(control.zoom_signout)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.set_setting("zoom_account_signed_in", "0")
+    db.set_setting("zoom_account_label", "")
+    db.audit(session["username"], "zoom_signout", ip=deps.client_ip(request))
+    return result
+
+
+# ---------------------------------------------------------------- api: accounts (Part 2)
+#
+# No route here ever receives or returns a password, 2FA code, token or
+# cookie. Sign-in happens in a Chrome window over noVNC; these routes
+# only open/close that window and ask Google whether a session exists.
+
+@app.get("/api/accounts")
+async def api_accounts_list(request: Request):
+    deps.require_session_api(request)
+    return accounts_mod.list_accounts()
+
+
+@app.post("/api/accounts")
+async def api_accounts_create(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_create", max_calls=5, window_seconds=60)
+    body = await request.json()
+    try:
+        aid = await run_in_threadpool(accounts_mod.create_account, str(body.get("label", "")))
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_create", str(aid), deps.client_ip(request))
+    return {"id": aid}
+
+
+@app.post("/api/accounts/import")
+async def api_accounts_import(request: Request):
+    """New account from the shared stream profile's existing session (the
+    one Zoom's Google sign-in / the kiosk used). Nothing is read from the
+    profile here - it is copied as zoombot and then verified with Google."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_import", max_calls=3, window_seconds=60)
+    body = await request.json()
+    try:
+        aid = await run_in_threadpool(accounts_mod.import_stream_profile, str(body.get("label", "")))
+        async with _verify_lock:
+            result = await run_in_threadpool(accounts_mod.verify_account, aid)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_import", f"{aid}:{result['state']}", deps.client_ip(request))
+    return {"id": aid, "verify": result}
+
+
+@app.post("/api/accounts/{account_id}/signout")
+async def api_accounts_signout(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        await run_in_threadpool(accounts_mod.sign_out, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_signout", str(account_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/accounts/{account_id}/backup")
+async def api_accounts_backup(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_backup", max_calls=4, window_seconds=60)
+    try:
+        result = await run_in_threadpool(accounts_mod.backup_account, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_backup", f"{account_id}:{result['backup']}", deps.client_ip(request))
+    return result
+
+
+@app.get("/api/accounts/{account_id}/backups")
+async def api_accounts_backups(account_id: int, request: Request):
+    deps.require_session_api(request)
+    try:
+        return await run_in_threadpool(accounts_mod.list_backups, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+
+
+@app.post("/api/accounts/{account_id}/restore")
+async def api_accounts_restore(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_restore", max_calls=4, window_seconds=60)
+    body = await request.json()
+    name = str(body.get("name") or "") or None
+    try:
+        async with _verify_lock:
+            result = await run_in_threadpool(accounts_mod.restore_account, account_id, name)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_restore", f"{account_id}:{result.get('restored', '')}:{result['state']}", deps.client_ip(request))
+    return result
+
+
+@app.put("/api/accounts/{account_id}")
+async def api_accounts_rename(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        accounts_mod.rename_account(account_id, str(body.get("label", "")))
+    except AccountError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_rename", str(account_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.delete("/api/accounts/{account_id}")
+async def api_accounts_delete(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_delete", max_calls=5, window_seconds=60)
+    try:
+        await run_in_threadpool(accounts_mod.remove_account, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_delete", str(account_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/accounts/{account_id}/signin/start")
+async def api_accounts_signin_start(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_signin", max_calls=6, window_seconds=60)
+    try:
+        result = await run_in_threadpool(accounts_mod.signin_start, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_signin_start", str(account_id), deps.client_ip(request))
+    return result
+
+
+@app.post("/api/accounts/{account_id}/signin/cancel")
+async def api_accounts_signin_cancel(account_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    try:
+        await run_in_threadpool(accounts_mod.signin_cancel, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "account_signin_cancel", str(account_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/accounts/{account_id}/signin/status")
+async def api_accounts_signin_status(account_id: int, request: Request):
+    deps.require_session_api(request)
+    try:
+        return await run_in_threadpool(accounts_mod.signin_status, account_id)
+    except (AccountError, control.ControlError) as exc:
+        return _api_error(exc)
+
+
+_verify_lock = asyncio.Lock()  # one headless verify at a time (fixed profile lock semantics)
+
+
+@app.post("/api/accounts/{account_id}/verify")
+async def api_accounts_verify(account_id: int, request: Request):
+    """Also the "I'm done" step of sign-in: closes the sign-in window
+    (flushing cookies) and asks Google whether a session now exists."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "account_verify", max_calls=6, window_seconds=60)
+    async with _verify_lock:
+        try:
+            result = await run_in_threadpool(accounts_mod.verify_account, account_id)
+        except (AccountError, control.ControlError) as exc:
+            return _api_error(exc)
+    db.audit(session["username"], "account_verify", f"{account_id}:{result['state']}", deps.client_ip(request))
+    return result
+
+
+# ---------------------------------------------------------------- api: touch remote / media control (Part 3)
+
+@app.get("/api/audio/stream")
+async def api_audio_stream_get(request: Request):
+    deps.require_session_api(request)
+    try:
+        result = await run_in_threadpool(control.stream_audio_action, "status")
+    except control.ControlError as exc:
+        return _api_error(exc)
+    return result
+
+
+@app.post("/api/audio/stream")
+async def api_audio_stream_post(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "audio_stream", max_calls=10, window_seconds=10)
+    body = await request.json()
+    action = str(body.get("action", ""))
+    if action not in ("mute", "unmute", "volume"):
+        raise HTTPException(status_code=400, detail="action must be mute, unmute or volume")
+    try:
+        volume = int(body.get("volume", 100)) if action == "volume" else None
+        result = await run_in_threadpool(control.stream_audio_action, action, volume)
+    except (control.ControlError, ValueError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "audio_stream_" + action, str(volume) if volume is not None else "", deps.client_ip(request))
+    return result
+
+
+@app.get("/api/audio/level")
+async def api_audio_level(request: Request):
+    """Live level of what viewers hear (zoom_out.monitor). Polling this
+    is what keeps the sampler running - it stops by itself ~15s after the
+    last poll, so it costs nothing when no panel is open."""
+    deps.require_session_api(request)
+    await audio_level.manager.touch()
+    return audio_level.manager.snapshot()
+
+
+@app.get("/api/audio/zoom-mic")
+async def api_zoom_mic_state(request: Request):
+    deps.require_session_api(request)
+    return await run_in_threadpool(control.zoom_mic_state)
+
+
+@app.post("/api/audio/zoom-mic/toggle")
+async def api_zoom_mic_toggle(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_mic_toggle", max_calls=6, window_seconds=10)
+    try:
+        result = await run_in_threadpool(control.zoom_mic_toggle)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_mic_toggle", ip=deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/leave-with-choice")
+async def api_zoom_leave_with_choice(request: Request):
+    """Distinct from POST /api/zoom/leave (used by the desktop Controls
+    page, which just stops zoom.service): this is the touch remote's
+    "Leave meeting" action, which also decides what happens to the
+    stream afterwards."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_leave", max_calls=3, window_seconds=30)
+    body = await request.json()
+    then = str(body.get("then", "slate"))
+    if then not in ("stop", "slate"):
+        raise HTTPException(status_code=400, detail="'then' must be 'stop' or 'slate'")
+    if then == "stop":
+        await run_in_threadpool(scheduler.note_manual_override)
+    try:
+        results = await run_in_threadpool(control.zoom_leave, then)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_leave", then, deps.client_ip(request))
+    return {"results": results}
+
+
+@app.get("/api/youtube-links")
+async def api_youtube_links_list(request: Request):
+    deps.require_session_api(request)
+    return youtube_watch.list_links()
+
+
+@app.post("/api/youtube/parse")
+async def api_youtube_parse(request: Request):
+    """Smart paste: any YouTube link form (or share text / bare id) ->
+    what it is, normalized, plus title/channel/thumbnail from YouTube's
+    public oEmbed, for the operator to confirm before saving."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "youtube_parse", max_calls=20, window_seconds=30)
+    body = await request.json()
+    parsed = youtube.parse_any(str(body.get("text", ""))[:20000])
+    if parsed.get("ok"):
+        try:
+            await run_in_threadpool(url_security.validate_url, parsed["url"], "webpage")
+        except URLSecurityError as exc:
+            parsed["ok"] = False; parsed["errors"].append(str(exc))
+            return parsed
+        meta = await run_in_threadpool(youtube.lookup, parsed["url"])
+        if meta.get("unavailable"):
+            parsed["warnings"].append("YouTube has no public details for this (private, removed, or members-only?) - it may not play.")
+        else:
+            parsed.update({k: v for k, v in meta.items() if v})
+        if parsed["kind"] == "live_channel":
+            try:
+                r = await run_in_threadpool(youtube.resolve_live, parsed["url"])
+                if r["video_id"]:
+                    parsed["live_now"] = True; parsed["thumbnail_url"] = f"https://i.ytimg.com/vi/{r['video_id']}/hqdefault.jpg"
+                    live_meta = await run_in_threadpool(youtube.lookup, f"https://www.youtube.com/watch?v={r['video_id']}")
+                    parsed.update({k: v for k, v in live_meta.items() if v})
+                else:
+                    parsed["live_now"] = False; parsed["warnings"].append("This channel is not live right now.")
+            except youtube.YouTubeURLError as exc:
+                parsed["warnings"].append(str(exc))
+    return parsed
+
+
+@app.get("/api/youtube/settings")
+async def api_youtube_settings(request: Request):
+    deps.require_session_api(request)
+    return youtube_watch.get_settings()
+
+
+@app.put("/api/youtube/settings")
+async def api_youtube_settings_set(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    result = youtube_watch.set_settings({k: bool(body.get(k)) for k in youtube_watch.SETTING_KEYS if k in body})
+    db.audit(session["username"], "youtube_settings", ",".join(f"{k}={int(v)}" for k, v in result.items()), deps.client_ip(request))
+    return result
+
+
+def _link_row(link_id: int) -> dict | None:
+    for l in youtube_watch.list_links():
+        if l["id"] == link_id:
+            return l
+    return None
+
+
+async def play_youtube_link(link: dict | None = None, url: str | None = None, options: dict | None = None) -> str:
+    """Navigate the kiosk to a saved link (with its options) or a raw
+    URL. The single path every play goes through - taps, next/prev,
+    auto-advance. Returns the embed URL."""
+    raw_url = link["url"] if link else (url or "")
+    opts = youtube.validate_options(link["options"] if link else (options or {}))
+    embed_url = await run_in_threadpool(youtube.to_play_url, raw_url, opts)
+    await cdp.navigate(embed_url)
+    youtube_watch.current.update({"link_id": link["id"] if link else None, "url": raw_url, "since": time.time()})
+    if link:
+        with db.get_conn() as conn:
+            conn.execute("UPDATE youtube_links SET last_played_at=?, plays=plays+1 WHERE id=?", (time.time(), link["id"]))
+    # The watch page needs a moment before a <video> exists - poll rather
+    # than blind-sleep, then apply what the URL can't carry (loop,
+    # captions, speed) and fullscreen the player so it fills the canvas
+    # like the old embed did (the kiosk window is already fullscreen).
+    for _ in range(16):
+        await asyncio.sleep(0.5)
+        try:
+            res = await cdp.evaluate(cdp.JS_ENSURE_UNMUTED)
+        except cdp.CDPError:
+            continue
+        if res.get("value"):
+            try:
+                await cdp.evaluate(cdp.js_apply_options(bool(opts.get("loop")), bool(opts.get("captions")), float(opts.get("speed") or 1.0)))
+                await cdp.evaluate(cdp.JS_PLAY, user_gesture=True)
+            except cdp.CDPError:
+                pass
+            # Fullscreen the player once the page reports it isn't; the
+            # button exists before it works, so retry a few times.
+            if youtube_watch.get_settings().get("yt_keep_fullscreen", True):
+                for _ in range(6):
+                    try:
+                        st = (await cdp.evaluate(cdp.JS_STATE)).get("value") or {}
+                        if st.get("fullscreen"):
+                            break
+                        await cdp.evaluate(cdp.JS_FULLSCREEN, user_gesture=True)
+                    except cdp.CDPError:
+                        break
+                    await asyncio.sleep(1.0)
+            break
+    return embed_url
+
+
+@app.get("/api/youtube/state")
+async def api_youtube_state(request: Request):
+    """Live player state read off the kiosk tab (never cached), plus the
+    spec's playback diagnosis (sign-in / age-restricted / error) with
+    the concrete fix for each."""
+    deps.require_session_api(request)
+    try:
+        res = await cdp.evaluate(cdp.JS_STATE)
+    except cdp.CDPError as exc:
+        return {"available": False, "reason": str(exc)}
+    state = res.get("value") or {}
+    state["available"] = True
+    state["diagnosis"] = cdp.diagnose(state)
+    state.update(youtube_watch.phase(state))
+    state["current_link_id"] = youtube_watch.current["link_id"]
+    state["auto"] = youtube_watch.last.get("auto", [])[:3]
+    state["settings"] = youtube_watch.get_settings()
+    return state
+
+
+@app.post("/api/youtube-links")
+async def api_youtube_links_create(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    try:
+        row = await _youtube_link_from_body(body)
+    except (YouTubeURLError, URLSecurityError) as exc:
+        return _api_error(exc)
+    with db.get_conn() as conn:
+        order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM youtube_links").fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO youtube_links (name, url, created_at, sort_order, kind, title, author, thumbnail_url, options) VALUES (?,?,?,?,?,?,?,?,?)",
+            (row["name"], row["url"], time.time(), order, row["kind"], row["title"], row["author"], row["thumbnail_url"], json.dumps(row["options"])),
+        )
+        lid = cur.lastrowid
+    db.audit(session["username"], "youtube_link_create", row["name"], deps.client_ip(request))
+    return {"id": lid, "link": _link_row(lid)}
+
+
+async def _youtube_link_from_body(body: dict, existing: dict | None = None) -> dict:
+    """Validate a create/edit payload: the URL is parsed and normalized,
+    options validated, metadata looked up when the URL changed."""
+    url = str(body.get("url", "") or "").strip() or (existing["url"] if existing else "")
+    parsed = youtube.parse_any(url)
+    if not parsed["ok"]:
+        raise YouTubeURLError(parsed["errors"][0] if parsed["errors"] else "Not a playable YouTube link")
+    url = parsed["url"]
+    await run_in_threadpool(url_security.validate_url, url, "webpage")
+    options = youtube.validate_options(body.get("options") if body.get("options") is not None else (existing["options"] if existing else {}))
+    if options["start"] is None and parsed.get("start"):
+        options["start"] = parsed["start"]
+    name = str(body.get("name", "") or "").strip()[:120]
+    meta = {}
+    if not existing or existing["url"] != url:
+        meta = await run_in_threadpool(youtube.lookup, url)
+    title = meta.get("title") or (existing["title"] if existing else None)
+    author = meta.get("author") or (existing["author"] if existing else None)
+    thumb = meta.get("thumbnail_url") or parsed.get("thumbnail_url") or (existing["thumbnail_url"] if existing else None)
+    if not name:
+        name = (title or (existing["name"] if existing else "") or {"playlist": "Playlist", "live_channel": (parsed.get("channel") or "Channel") + " live"}.get(parsed["kind"], "Video " + (parsed.get("video_id") or "")))[:120]
+    return {"name": name, "url": url, "kind": parsed["kind"], "title": title, "author": author, "thumbnail_url": thumb, "options": options}
+
+
+@app.put("/api/youtube-links/{link_id}")
+async def api_youtube_links_update(link_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    existing = _link_row(link_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="saved link not found")
+    body = await request.json()
+    try:
+        row = await _youtube_link_from_body(body, existing)
+    except (YouTubeURLError, URLSecurityError) as exc:
+        return _api_error(exc)
+    with db.get_conn() as conn:
+        conn.execute("UPDATE youtube_links SET name=?, url=?, kind=?, title=?, author=?, thumbnail_url=?, options=? WHERE id=?",
+                     (row["name"], row["url"], row["kind"], row["title"], row["author"], row["thumbnail_url"], json.dumps(row["options"]), link_id))
+    db.audit(session["username"], "youtube_link_update", str(link_id), deps.client_ip(request))
+    return {"ok": True, "link": _link_row(link_id)}
+
+
+@app.post("/api/youtube-links/{link_id}/duplicate")
+async def api_youtube_links_duplicate(link_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    l = _link_row(link_id)
+    if not l:
+        raise HTTPException(status_code=404, detail="saved link not found")
+    with db.get_conn() as conn:
+        order = conn.execute("SELECT COALESCE(MAX(sort_order), 0) + 1 FROM youtube_links").fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO youtube_links (name, url, created_at, sort_order, kind, title, author, thumbnail_url, options) VALUES (?,?,?,?,?,?,?,?,?)",
+            ((l["name"] + " (copy)")[:120], l["url"], time.time(), order, l["kind"], l["title"], l["author"], l["thumbnail_url"], json.dumps(l["options"])),
+        )
+        lid = cur.lastrowid
+    db.audit(session["username"], "youtube_link_duplicate", f"{link_id}->{lid}", deps.client_ip(request))
+    return {"id": lid, "link": _link_row(lid)}
+
+
+@app.post("/api/youtube-links/reorder")
+async def api_youtube_links_reorder(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    ids = [int(x) for x in (body.get("ids") or []) if str(x).isdigit()]
+    with db.get_conn() as conn:
+        for i, lid in enumerate(ids):
+            conn.execute("UPDATE youtube_links SET sort_order=? WHERE id=?", (i + 1, lid))
+    db.audit(session["username"], "youtube_links_reorder", str(len(ids)), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.delete("/api/youtube-links/{link_id}")
+async def api_youtube_links_delete(link_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM youtube_links WHERE id=?", (link_id,))
+    db.audit(session["username"], "youtube_link_delete", str(link_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/youtube/play")
+async def api_youtube_play(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "youtube_play", max_calls=6, window_seconds=15)
+    body = await request.json()
+    raw_url = str(body.get("url", "")).strip()
+    link_id = body.get("link_id")
+    if link_id and not raw_url:
+        with db.get_conn() as conn:
+            row = conn.execute("SELECT url FROM youtube_links WHERE id=?", (link_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="saved link not found")
+        raw_url = row["url"]
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="url or link_id is required")
+    link = _link_row(int(link_id)) if link_id and not str(body.get("url", "")).strip() else None
+    try:
+        if link:
+            embed_url = await play_youtube_link(link)
+        else:
+            parsed = youtube.parse_any(raw_url)
+            if not parsed["ok"]:
+                raise YouTubeURLError(parsed["errors"][0] if parsed["errors"] else "Not a playable YouTube link")
+            embed_url = await play_youtube_link(url=parsed["url"], options=body.get("options") or {})
+    except (YouTubeURLError, URLSecurityError, cdp.CDPError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "youtube_play", raw_url[:200], deps.client_ip(request))
+    return {"ok": True, "embed_url": embed_url, "current_link_id": youtube_watch.current["link_id"]}
+
+
+@app.post("/api/youtube/control")
+async def api_youtube_control(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "youtube_control", max_calls=15, window_seconds=10)
+    body = await request.json()
+    action = str(body.get("action", ""))
+    try:
+        if action == "play":
+            await cdp.evaluate(cdp.JS_PLAY, user_gesture=True)
+        elif action == "pause":
+            await cdp.evaluate(cdp.JS_PAUSE)
+        elif action == "volume":
+            level = int(body.get("level", 100))
+            await cdp.evaluate(cdp.js_set_volume(level))
+        elif action == "mute":
+            await cdp.evaluate(cdp.JS_MUTE)
+        elif action == "unmute":
+            await cdp.evaluate(cdp.JS_UNMUTE)
+        elif action == "seek":
+            await cdp.evaluate(cdp.js_seek(float(body.get("seconds", 0))))
+        elif action == "theater":
+            await cdp.evaluate(cdp.JS_THEATER)
+        elif action == "fullscreen":
+            await cdp.evaluate(cdp.JS_FULLSCREEN, user_gesture=True)
+        elif action == "speed":
+            rate = float(body.get("rate", 1.0))
+            if rate not in youtube.SPEEDS:
+                raise HTTPException(status_code=400, detail="invalid speed")
+            res = await cdp.evaluate(cdp.js_set_speed(rate))
+            return {"ok": True, "speed": res.get("value")}
+        elif action == "captions":
+            res = await cdp.evaluate(cdp.JS_TOGGLE_CAPTIONS, user_gesture=True)
+            return {"ok": True, "captions": res.get("value")}
+        elif action == "skip-ad":
+            res = await cdp.evaluate(cdp.JS_SKIP_AD, user_gesture=True)
+            return {"ok": True, "skipped": bool(res.get("value"))}
+        elif action == "dismiss-prompt":
+            res = await cdp.evaluate(cdp.JS_DISMISS_PROMPT, user_gesture=True)
+            return {"ok": True, "dismissed": bool(res.get("value"))}
+        elif action == "replay":
+            await cdp.evaluate(cdp.JS_REPLAY, user_gesture=True)
+        elif action in ("next", "prev"):
+            nxt = youtube_watch.neighbour(1 if action == "next" else -1)
+            if not nxt:
+                raise HTTPException(status_code=400, detail="no saved links")
+            await play_youtube_link(nxt)
+            return {"ok": True, "current_link_id": nxt["id"], "name": nxt["name"]}
+        elif action == "retry":
+            cur = youtube_watch.current
+            if cur.get("link_id") and _link_row(cur["link_id"]):
+                await play_youtube_link(_link_row(cur["link_id"]))
+            elif cur.get("url"):
+                await play_youtube_link(url=cur["url"])
+            else:
+                raise HTTPException(status_code=400, detail="nothing to retry")
+        else:
+            raise HTTPException(status_code=400, detail="invalid action")
+    except (cdp.CDPError, ValueError, YouTubeURLError, URLSecurityError) as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "youtube_control_" + action, ip=deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/zoom/status")
+async def api_zoom_status(request: Request):
+    """Meeting status + mic/camera readback. Every field is a best-effort
+    heuristic (authoritative=False) - see control.zoom_meeting_status."""
+    deps.require_session_api(request)
+    st = await run_in_threadpool(control.zoom_meeting_status)
+    try:
+        unit = await run_in_threadpool(control.unit_show, "zoom")
+        unit_active = unit["phase"] in (control.PHASE_LIVE, control.PHASE_STARTING)
+    except control.ControlError:
+        unit_active = False
+    verdict = st if st.get("confidence") else zoom_state.classify_desktop(st, unit_active)      # the web path already carries its own
+    unit_status.remember_zoom(verdict)
+    return {**st, "confidence": verdict.get("confidence"), "confirmed": verdict.get("confirmed"), "evidence": verdict.get("evidence")}
+
+
+@app.post("/api/broadcast/acknowledge-error")
+async def api_broadcast_ack_error(request: Request):
+    """Dismisses the last-crash record shown on the Overview. It does not start or restart anything."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    broadcast.acknowledge_error()
+    db.audit(session["username"], "broadcast_error_ack", ip=deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/zoom/control")
+async def api_zoom_control(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_control", max_calls=10, window_seconds=10)
+    body = await request.json()
+    action = str(body.get("action", ""))
+    if action not in control.ZOOM_SHORTCUT_ACTIONS:
+        raise HTTPException(status_code=400, detail="invalid action")
+    try:
+        result = await run_in_threadpool(control.zoom_shortcut, action)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    if action.startswith("view-"):
+        # A view change can bring Zoom's bars back or drop its fullscreen
+        # state; re-assert Meeting-only (idempotent) when it's on.
+        active = sources_mod.get_active_source()
+        if active and active["type"] == "zoom" and (active.get("options") or {}).get("meeting_only"):
+            try:
+                result["meeting_only"] = await run_in_threadpool(control.zoom_set_meeting_only, True)
+            except control.ControlError as exc:
+                result["meeting_only"] = {"applied": False, "note": str(exc)}
+    db.audit(session["username"], "zoom_control_" + action, ip=deps.client_ip(request))
+    return result
+
+
+@app.get("/api/browser/status")
+async def api_browser_status(request: Request):
+    """Is the kiosk Chrome controllable right now? connected=True with
+    the Chrome version and current page, or connected=False with a
+    concrete reason code + what to do about it (see
+    control.browser_diagnosis). Polled by the panel while a web source
+    is active."""
+    deps.require_session_api(request)
+    try:
+        return await cdp.probe()
+    except cdp.CDPError as exc:
+        diag = await run_in_threadpool(control.browser_diagnosis)
+        diag["detail"] = str(exc)
+        return diag
+
+
+@app.post("/api/browser/open")
+async def api_browser_open(request: Request):
+    """"Browser" on the touch remote: put Google (or another https page)
+    on :99 in the profile that already holds the operator's Google
+    session, so it comes up signed in. Prefers navigating the kiosk tab
+    over DevTools (one window, YouTube controls keep working); when no
+    controllable kiosk exists, open-browser.sh opens a window in that
+    same profile. Reports which account the page shows, masked."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "browser_open", max_calls=6, window_seconds=20)
+    body = await request.json()
+    raw_url = str(body.get("url") or control.BROWSER_HOME_URL).strip()
+    try:
+        url = await run_in_threadpool(url_security.validate_url, raw_url, "webpage")
+    except URLSecurityError as exc:
+        return _api_error(exc)
+    result: dict
+    try:
+        await cdp.probe()
+        await cdp.navigate(url)
+        try:
+            await run_in_threadpool(control.focus_window, "browser")
+        except control.ControlError:
+            pass
+        result = {"ok": True, "mode": "kiosk"}
+    except cdp.CDPError:
+        try:
+            result = await run_in_threadpool(control.open_browser_window, url)
+        except control.ControlError as exc:
+            return _api_error(exc)
+    # Signed-in identity, best effort: only readable through DevTools
+    # (kiosk) once the page has rendered its account button.
+    result["signed_in_as"] = None
+    if result.get("mode") == "kiosk":
+        for _ in range(8):
+            await asyncio.sleep(0.5)
+            try:
+                res = await cdp.evaluate(cdp.JS_GOOGLE_IDENTITY)
+            except cdp.CDPError:
+                break
+            val = res.get("value")
+            if val is None:
+                continue
+            result["signed_in_as"] = accounts_mod.mask_email(val) if val else "(account, email hidden)"
+            break
+    result["url"] = url
+    db.audit(session["username"], "browser_open", url, deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/dialog")
+async def api_zoom_dialog(request: Request):
+    """list: pop-up dialogs Zoom has open; dismiss: close them via their
+    own OK/Close button. Used by the program panel's canvas alert."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    action = str(body.get("action", "list"))
+    if action not in ("list", "dismiss"):
+        raise HTTPException(status_code=400, detail="action must be list or dismiss")
+    if action == "dismiss":
+        deps.require_rate_limit(session, "zoom_dialog_dismiss", max_calls=6, window_seconds=30)
+    try:
+        result = await run_in_threadpool(control.zoom_dialog, action)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    if action == "dismiss":
+        db.audit(session["username"], "zoom_dialog_dismiss",
+                 ", ".join(d.get("title", "") for d in result.get("dismissed", [])), deps.client_ip(request))
+    return result
+
+
+@app.post("/api/zoom/quit-to-slate")
+async def api_zoom_quit_to_slate(request: Request):
+    """"Reset Zoom window": stop zoom.service and put the slate on the
+    canvas. The encoder is never touched."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "zoom_quit", max_calls=3, window_seconds=30)
+    try:
+        results = await run_in_threadpool(control.zoom_quit_to_slate)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "zoom_quit_to_slate", ip=deps.client_ip(request))
+    return {"results": results}
+
+
+@app.post("/api/window/focus")
+async def api_window_focus(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "window_focus", max_calls=12, window_seconds=10)
+    body = await request.json()
+    which = str(body.get("which", ""))
+    if which not in control.FOCUS_TARGETS:
+        raise HTTPException(status_code=400, detail="which must be zoom or browser")
+    try:
+        result = await run_in_threadpool(control.focus_window, which)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "window_focus", which, deps.client_ip(request))
+    return result
+
+
+@app.post("/api/vnc/rate")
+async def api_vnc_rate(request: Request):
+    """fast while the preview is interactive, slow otherwise. The page
+    calls this on toggle / visibility change; x11vnc keeps whatever was
+    last set, so the client also sends `slow` on unload."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "vnc_rate", max_calls=12, window_seconds=10)
+    body = await request.json()
+    mode = str(body.get("mode", "slow"))
+    if mode not in control.VNC_RATES:
+        raise HTTPException(status_code=400, detail="mode must be fast or slow")
+    try:
+        result = await run_in_threadpool(control.set_vnc_rate, mode)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "vnc_rate", mode, deps.client_ip(request))
+    return result
+
+
+@app.post("/api/audio/selftest")
+async def api_audio_selftest(request: Request):
+    """End-to-end audio proof (tone -> sink -> meter + capture -> file).
+    The script refuses to run while ffmpeg-stream is active; ~12s."""
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    deps.require_rate_limit(session, "audio_selftest", max_calls=2, window_seconds=60)
+    try:
+        result = await run_in_threadpool(control.audio_selftest)
+    except control.ControlError as exc:
+        return _api_error(exc)
+    db.audit(session["username"], "audio_selftest", "ok" if result.get("ok") else "failed", deps.client_ip(request))
+    return result
+
+
+# ---------------------------------------------------------------- api: schedules
+# Live Studio "Schedule" card and the /schedule page share this one API and
+# the same `schedules` table rows - see app/scheduler.py's "rich schedules"
+# section for the reconciliation engine behind it.
+
+REPEAT_MODES = {"once", "daily", "weekdays", "custom"}
+
+
+def _parse_hhmm(value: str, field: str) -> tuple[int, int]:
+    try:
+        h, m = str(value).split(":")
+        h, m = int(h), int(m)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail=f"{field} must be HH:MM") from None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        raise HTTPException(status_code=400, detail=f"{field} must be a valid 24h time")
+    return h, m
+
+
+def _row_to_schedule_view(row: dict) -> dict:
+    source = sources_mod.get_source(row["source_id"]) if row.get("source_id") else None
+    warnings: list[str] = []
+    if source and source["type"] == "zoom":
+        warnings = sources_mod.zoom_warnings(source)
+        account_id = source.get("account_id")
+        if account_id:
+            acc = accounts_mod.get_account(account_id)
+            if acc and acc.get("state") != "signed_in":
+                warnings.append(f"The Google account bound to this source isn't currently verified (state: {acc.get('state')}).")
+    info = scheduler.next_run_info(row)
+    custom_days = [int(x) for x in (row.get("custom_days") or "").split(",") if x.strip().isdigit()]
+    return {
+        "id": row["id"], "label": row.get("label") or "", "enabled": bool(row["enabled"]),
+        "source_id": row.get("source_id"), "source_name": source["name"] if source else None,
+        "source_type": source["type"] if source else None,
+        "repeat_mode": row.get("repeat_mode") or "once",
+        "start_date": row.get("start_date"), "custom_days": custom_days,
+        "start_time": f"{int(row['start_hour']):02d}:{int(row['start_minute']):02d}" if row.get("start_hour") is not None else None,
+        "end_time": f"{int(row['end_hour']):02d}:{int(row['end_minute']):02d}" if row.get("end_hour") is not None else None,
+        "overnight": bool(row.get("overnight")), "join_lead_minutes": row.get("join_lead_minutes"),
+        "keep_meeting_open": bool(row.get("keep_meeting_open")), "skip_next": bool(row.get("skip_next")),
+        "state": row.get("state") or "idle", "state_detail": row.get("state_detail"),
+        "last_run_at": row.get("last_run_at"), "warnings": warnings,
+        **info,
+    }
+
+
+def _list_schedules() -> list[dict]:
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM schedules ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+
+def _get_schedule_row(schedule_id: int) -> dict:
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT * FROM schedules WHERE id=?", (schedule_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="schedule not found")
+    return dict(row)
+
+
+def _validate_schedule_payload(body: dict, exclude_id: int | None = None) -> dict:
+    repeat_mode = body.get("repeat_mode", "once")
+    if repeat_mode not in REPEAT_MODES:
+        raise HTTPException(status_code=400, detail="repeat_mode must be once, daily, weekdays or custom")
+
+    source_id = body.get("source_id")
+    if not source_id:
+        raise HTTPException(status_code=400, detail="a source is required")
+    source = sources_mod.get_source(int(source_id))
+    if not source:
+        raise HTTPException(status_code=400, detail="that source no longer exists")
+    if source["type"] == "zoom":
+        missing = sources_mod.zoom_missing(source)
+        if missing:
+            raise HTTPException(status_code=400, detail="This source isn't joinable yet: " + "; ".join(missing))
+
+    start_hour, start_minute = _parse_hhmm(body.get("start_time", ""), "start_time")
+    end_hour, end_minute = _parse_hhmm(body.get("end_time", ""), "end_time")
+    overnight = bool(body.get("overnight"))
+    same_or_before = (end_hour, end_minute) <= (start_hour, start_minute)
+    if same_or_before and not overnight:
+        raise HTTPException(status_code=400, detail="End time must be after start time - check 'ends next day' for an overnight run")
+
+    custom_days: list[int] = []
+    if repeat_mode == "custom":
+        custom_days = sorted({int(d) for d in (body.get("custom_days") or []) if 0 <= int(d) <= 6})
+        if not custom_days:
+            raise HTTPException(status_code=400, detail="pick at least one day for a custom repeat")
+
+    join_lead_minutes = int(body.get("join_lead_minutes", 5))
+    if not (0 <= join_lead_minutes <= 120):
+        raise HTTPException(status_code=400, detail="join lead time must be between 0 and 120 minutes")
+
+    now = scheduler.now()
+    start_date_str = body.get("start_date") or now.date().isoformat()
+    try:
+        start_date = dt.date.fromisoformat(start_date_str)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="start_date must be YYYY-MM-DD") from None
+
+    if repeat_mode == "once":
+        start_at = dt.datetime.combine(start_date, dt.time(start_hour, start_minute), tzinfo=scheduler.TZ)
+        if start_at < now:
+            raise HTTPException(status_code=400, detail="That date/time is in the past")
+    elif start_date < now.date():
+        # Recurring schedules just need *a* valid day pattern going forward -
+        # silently clamp an old "active from" date to today rather than
+        # rejecting (the day-pattern is what matters, not this anchor).
+        start_date = now.date()
+        start_date_str = start_date.isoformat()
+
+    payload = {
+        "label": (body.get("label") or "").strip() or None,
+        "source_id": int(source_id),
+        "repeat_mode": repeat_mode,
+        "start_date": start_date_str,
+        "custom_days": ",".join(str(d) for d in custom_days) if repeat_mode == "custom" else None,
+        "start_hour": start_hour, "start_minute": start_minute,
+        "end_hour": end_hour, "end_minute": end_minute,
+        "overnight": 1 if overnight else 0,
+        "join_lead_minutes": join_lead_minutes,
+        "keep_meeting_open": 1 if body.get("keep_meeting_open") else 0,
+    }
+
+    candidate = dict(payload)
+    candidate["id"] = exclude_id
+    with db.get_conn() as conn:
+        others = conn.execute("SELECT * FROM schedules WHERE enabled=1 AND id != ?",
+                              (exclude_id or -1,)).fetchall()
+    for other in others:
+        if scheduler.schedules_overlap(candidate, dict(other)):
+            label = other["label"] or f"schedule #{other['id']}"
+            raise HTTPException(status_code=400, detail=f"This overlaps an existing enabled schedule ('{label}')")
+
+    return payload
+
+
+@app.get("/api/schedules")
+async def api_schedules_list(request: Request):
+    deps.require_session_api(request)
+    rows = await run_in_threadpool(_list_schedules)
+    return {
+        "schedules": [_row_to_schedule_view(r) for r in rows],
+        "ntp_synced": scheduler.ntp_synced(),
+        "timezone": config.SCHEDULE_TIMEZONE,
+        "server_time": scheduler.now().isoformat(),
+    }
+
+
+@app.post("/api/schedules")
+async def api_schedules_create(request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    body = await request.json()
+    payload = await run_in_threadpool(_validate_schedule_payload, body)
+    with db.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO schedules (source_id, action, hour, minute, days_of_week, enabled, "
+            "label, repeat_mode, start_date, custom_days, start_hour, start_minute, end_hour, end_minute, "
+            "overnight, join_lead_minutes, keep_meeting_open, state, updated_at) "
+            "VALUES (?, 'go_live', 0, 0, '', 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?)",
+            (payload["source_id"], payload["label"], payload["repeat_mode"], payload["start_date"],
+             payload["custom_days"], payload["start_hour"], payload["start_minute"],
+             payload["end_hour"], payload["end_minute"], payload["overnight"],
+             payload["join_lead_minutes"], payload["keep_meeting_open"], time.time()),
+        )
+        sid = cur.lastrowid
+    scheduler.load_schedules()
+    db.audit(session["username"], "schedule_create",
+              f"id={sid} {payload['start_hour']:02d}:{payload['start_minute']:02d}-{payload['end_hour']:02d}:{payload['end_minute']:02d}",
+              deps.client_ip(request))
+    return _row_to_schedule_view(_get_schedule_row(sid))
+
+
+@app.put("/api/schedules/{schedule_id}")
+async def api_schedules_update(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    _get_schedule_row(schedule_id)  # 404 if missing
+    body = await request.json()
+    payload = await run_in_threadpool(_validate_schedule_payload, body, schedule_id)
+    with db.get_conn() as conn:
+        conn.execute(
+            "UPDATE schedules SET source_id=?, label=?, repeat_mode=?, start_date=?, custom_days=?, "
+            "start_hour=?, start_minute=?, end_hour=?, end_minute=?, overnight=?, join_lead_minutes=?, "
+            "keep_meeting_open=?, state='idle', state_occurrence_date=NULL, state_detail=NULL, updated_at=? "
+            "WHERE id=?",
+            (payload["source_id"], payload["label"], payload["repeat_mode"], payload["start_date"],
+             payload["custom_days"], payload["start_hour"], payload["start_minute"],
+             payload["end_hour"], payload["end_minute"], payload["overnight"],
+             payload["join_lead_minutes"], payload["keep_meeting_open"], time.time(), schedule_id),
+        )
+    scheduler.load_schedules()
+    db.audit(session["username"], "schedule_update", f"id={schedule_id}", deps.client_ip(request))
+    return _row_to_schedule_view(_get_schedule_row(schedule_id))
+
+
+@app.delete("/api/schedules/{schedule_id}")
+async def api_schedules_delete(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    with db.get_conn() as conn:
+        conn.execute("DELETE FROM schedules WHERE id=?", (schedule_id,))
+    scheduler.load_schedules()
+    db.audit(session["username"], "schedule_delete", str(schedule_id), deps.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/schedules/{schedule_id}/enable")
+async def api_schedules_enable(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    _get_schedule_row(schedule_id)
+    await run_in_threadpool(scheduler.set_enabled, schedule_id, True)
+    scheduler.load_schedules()
+    db.audit(session["username"], "schedule_enable", str(schedule_id), deps.client_ip(request))
+    return _row_to_schedule_view(_get_schedule_row(schedule_id))
+
+
+@app.post("/api/schedules/{schedule_id}/disable")
+async def api_schedules_disable(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    _get_schedule_row(schedule_id)
+    await run_in_threadpool(scheduler.set_enabled, schedule_id, False)
+    scheduler.load_schedules()
+    db.audit(session["username"], "schedule_disable", str(schedule_id), deps.client_ip(request))
+    return _row_to_schedule_view(_get_schedule_row(schedule_id))
+
+
+@app.post("/api/schedules/{schedule_id}/skip-next")
+async def api_schedules_skip_next(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    _get_schedule_row(schedule_id)
+    await run_in_threadpool(scheduler.set_skip_next, schedule_id, True)
+    db.audit(session["username"], "schedule_skip_next", str(schedule_id), deps.client_ip(request))
+    return _row_to_schedule_view(_get_schedule_row(schedule_id))
+
+
+@app.post("/api/schedules/{schedule_id}/run-now")
+async def api_schedules_run_now(schedule_id: int, request: Request):
+    session = deps.require_session_api(request)
+    deps.require_csrf(request, session)
+    row = _get_schedule_row(schedule_id)
+    if not row.get("enabled"):
+        raise HTTPException(status_code=400, detail="enable this schedule first")
+    try:
+        await run_in_threadpool(scheduler.run_now, schedule_id)
+    except ValueError as exc:
+        return _api_error(exc)
+    scheduler.load_schedules()
+    return _row_to_schedule_view(_get_schedule_row(schedule_id))
+
+
+# ---------------------------------------------------------------- api: logs / errors / audit
+
+@app.get("/api/logs/stream")
+async def api_logs_stream(request: Request, unit: str):
+    deps.require_session_api(request)
+    if unit not in config.VISIBLE_UNITS:
+        raise HTTPException(status_code=400, detail="unknown unit")
+
+    async def gen():
+        async for line in logs_mod.tail_for_unit(unit):
+            yield f"data: {json.dumps(line)}\n\n"
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+    })
+
+
+@app.get("/api/logs/download")
+async def api_logs_download(request: Request, unit: str):
+    deps.require_session_api(request)
+    if unit not in config.VISIBLE_UNITS:
+        raise HTTPException(status_code=400, detail="unknown unit")
+    redact = logs_mod.build_redactor()
+    lines = []
+    if unit in logs_mod.FILE_BACKED_UNITS:
+        path = logs_mod.FILE_BACKED_UNITS[unit]
+        if path.exists():
+            lines = [redact(l) for l in path.read_text(errors="replace").splitlines()[-2000:]]
+    else:
+        argv = [
+            logs_mod.JOURNALCTL, f"_SYSTEMD_USER_UNIT={unit}.service",
+            f"_UID={control.zoombot_uid()}", "-n", "2000", "--no-pager", "-o", "short-iso",
+        ]
+        proc = subprocess.run(argv, capture_output=True, timeout=15)
+        lines = [redact(l) for l in proc.stdout.decode(errors="replace").splitlines()]
+    return PlainTextResponse("\n".join(lines), headers={
+        "Content-Disposition": f'attachment; filename="{unit}.log.txt"'
+    })
+
+
+@app.get("/api/errors")
+async def api_errors(request: Request):
+    deps.require_session_api(request)
+    return logs_mod.recent_errors()
+
+
+@app.get("/api/audit")
+async def api_audit(request: Request):
+    deps.require_session_api(request)
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 200").fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------- vnc websocket
+
+@app.websocket("/vnc/ws")
+@app.websocket("/ws/vnc")
+async def vnc_ws(websocket: WebSocket):
+    await vnc_proxy.proxy(websocket)
+
+
+# ---------------------------------------------------------------- health / startup
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+
+@app.on_event("startup")
+async def on_startup():
+    db.init_db()
+    from . import secret_store
+    secret_store.try_auto_unlock()
+    scheduler.start()
+    from . import zoom_web, telegram
+    zoom_web.start_cleanfeed_heartbeat()
+    telegram.start_telegram_poller()
+    asyncio.create_task(_framing_watch_loop())
+

@@ -1,0 +1,254 @@
+/* ============================================================
+   YouTube Live Studio Room (/studio) - Atrium.
+   Master bar (tally + transport), a stage of program monitor + LED
+   audio ladder with telemetry tiles beneath, then schedule, RTMP /
+   source, and the local archive. Slide-over chat + safety modal.
+   Tokens only.
+   ============================================================ */
+
+.studio-container { display: flex; flex-direction: column; gap: var(--space-5); padding-bottom: var(--space-8); }
+.studio-row-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+
+/* ---------------------------------------------------------------- master bar */
+.studio-master-bar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4);
+  padding: var(--space-5) var(--space-6); border-radius: var(--radius-2xl); overflow: hidden; isolation: isolate;
+}
+.studio-master-bar::after {
+  content: ""; position: absolute; inset: -60% 40% -60% -10%; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, var(--live-tint), transparent);
+  opacity: 0; transition: opacity var(--duration-slower) var(--ease-in-out);
+}
+.studio-master-bar:has([data-state="on-air"])::after { opacity: 1; }
+.studio-master-left { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-5); }
+.studio-brand { display: flex; align-items: center; gap: var(--space-3); }
+.studio-live-icon {
+  display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 44px; height: 44px; border-radius: var(--radius-lg);
+  background: var(--live-tint); color: var(--live);
+  box-shadow: 0 1px 0 var(--glass-edge-highlight) inset;
+}
+.studio-live-icon .icon { width: var(--icon-lg); height: var(--icon-lg); }
+.studio-title { margin: 0; font-size: var(--text-xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tighter); color: var(--text); }
+
+/* Tally strip: off-air grey, starting amber pulse, on-air red glow */
+.studio-tally-strip {
+  display: inline-flex; align-items: center; gap: var(--space-3);
+  height: 36px; padding: 0 var(--space-4); border-radius: var(--radius-full);
+  border: var(--border-w) solid var(--border-strong); background: var(--bg-hover);
+  transition: background-color var(--duration-slow) var(--ease-in-out), border-color var(--duration-slow) var(--ease-in-out), box-shadow var(--duration-slow) var(--ease-in-out);
+}
+.tally-indicator { display: flex; align-items: center; gap: var(--space-2); }
+.tally-dot { width: var(--dot-lg); height: var(--dot-lg); border-radius: 50%; background: var(--text-faint); transition: background-color var(--duration-slow) var(--ease-in-out); }
+.tally-label { font-size: var(--text-2xs); font-weight: var(--weight-bold); letter-spacing: var(--tracking-wider); text-transform: uppercase; color: var(--text-dim); transition: color var(--duration-slow) var(--ease-in-out); }
+.tally-timecode { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: var(--weight-medium); color: var(--text-dim); border-left: var(--border-w) solid var(--border-strong); padding-left: var(--space-3); font-variant-numeric: tabular-nums; }
+.studio-tally-strip[data-state="starting"] { background: var(--warning-tint); border-color: var(--warning); box-shadow: 0 0 0 4px var(--warning-tint); }
+.studio-tally-strip[data-state="starting"] .tally-dot { background: var(--warning); animation: pulse 1.2s var(--ease-in-out) infinite; }
+.studio-tally-strip[data-state="starting"] .tally-label { color: var(--warning); }
+.studio-tally-strip[data-state="on-air"] { background: var(--live-tint); border-color: var(--live); box-shadow: 0 0 0 4px var(--live-tint), 0 0 24px -4px var(--live-glow); }
+.studio-tally-strip[data-state="on-air"] .tally-dot { background: var(--live); animation: dot-ping var(--duration-pulse) var(--ease-out) infinite; }
+.studio-tally-strip[data-state="on-air"] .tally-label { color: var(--live); }
+.studio-tally-strip[data-state="on-air"] .tally-timecode { color: var(--text); border-color: color-mix(in srgb, var(--live) 50%, transparent); }
+
+.studio-master-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.btn-studio-action { min-width: 148px; letter-spacing: var(--tracking-wide); text-transform: uppercase; font-weight: var(--weight-bold); }
+.btn-studio-action[data-action="go-live"] {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--success) 88%, white 12%), var(--success));
+  color: var(--text-on-accent); border-color: transparent;
+  box-shadow: 0 1px 0 var(--glass-edge-highlight) inset, 0 4px 14px -4px var(--success-glow);
+}
+:root[data-theme="black"] .btn-studio-action[data-action="go-live"],
+:root[data-theme="default"] .btn-studio-action[data-action="go-live"] { color: var(--media-ink); }
+.btn-studio-action[data-action="go-live"]:hover { transform: translateY(-1px); box-shadow: 0 1px 0 var(--glass-edge-highlight) inset, 0 10px 26px -6px var(--success-glow); }
+.btn-studio-action[data-action="starting"] { background: var(--warning-tint); color: var(--warning); border-color: var(--warning); }
+.btn-studio-action:disabled { opacity: var(--opacity-muted); cursor: not-allowed; transform: none !important; }
+
+/* ---------------------------------------------------------------- stage: monitor | audio, telemetry beneath */
+.studio-stage {
+  display: grid; gap: var(--space-5);
+  grid-template-columns: minmax(0, 1.75fr) minmax(300px, 1fr);
+  grid-template-areas: "preview audio" "telem telem";
+}
+.studio-preview-card { grid-area: preview; }
+.studio-audio-card { grid-area: audio; display: flex; flex-direction: column; }
+.studio-telemetry-card { grid-area: telem; }
+.studio-preview-card .panel-preview { border-radius: var(--radius-lg); }
+.studio-preview-card .program-id { font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-faint); letter-spacing: var(--tracking-wide); }
+
+/* telemetry tiles: four equal stat tiles with a health cap */
+.telemetry-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); }
+.telemetry-tile {
+  position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: center; min-height: 104px;
+  padding: var(--space-4); border-radius: var(--radius-lg);
+  background: var(--bg-panel); border: var(--border-w) solid var(--border); box-shadow: var(--shadow-xs);
+  transition: border-color var(--duration-slow) var(--ease-in-out), box-shadow var(--duration-base) var(--ease-out), transform var(--duration-base) var(--ease-out);
+}
+.telemetry-tile:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.telemetry-tile::before {
+  content: ""; position: absolute; top: 0; left: var(--space-4); right: var(--space-4); height: var(--tile-accent-h);
+  border-radius: 0 0 var(--radius-full) var(--radius-full); background: var(--border-strong);
+  transition: background-color var(--duration-slow) var(--ease-in-out);
+}
+.telemetry-tile.is-healthy::before { background: var(--success); }
+.telemetry-tile.is-warn::before { background: var(--warning); }
+.telemetry-tile.is-bad::before { background: var(--danger); }
+.telemetry-tile.is-bad { border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.telem-main { display: flex; align-items: baseline; gap: var(--space-1-5); margin: var(--space-1-5) 0 var(--space-1); }
+.telem-val { font-size: var(--text-2xl); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-tighter); color: var(--text); line-height: var(--leading-tight); font-variant-numeric: tabular-nums; }
+.telem-unit { font-size: var(--text-xs); color: var(--text-dim); }
+.telem-sub { font-size: var(--text-2xs); margin: 0; }
+
+/* ---------------------------------------------------------------- LED audio ladder */
+.audio-meter-panel { display: flex; flex-direction: column; gap: var(--space-4); flex: 1; }
+.dual-ladder-wrap {
+  display: flex; align-items: stretch; justify-content: center; gap: var(--space-3); flex: 1;
+  padding: var(--space-3) var(--space-4); border-radius: var(--radius-lg);
+  background: var(--media-ink); border: var(--border-w) solid var(--media-line); box-shadow: var(--media-inset);
+}
+.channel-column { flex: 1; max-width: 140px; display: flex; flex-direction: column; gap: var(--space-2); }
+.channel-header { display: flex; justify-content: space-between; align-items: baseline; }
+.channel-name { font-size: var(--text-2xs); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-wide); color: var(--media-text-dim); }
+.channel-peak-readout { font-size: var(--text-xs); color: var(--term-info); }
+.ladder-body { display: flex; flex-direction: column; gap: var(--space-0-5); flex: 1; justify-content: space-between; padding: var(--space-1); background: var(--media-ink-2); border-radius: var(--radius-sm); border: var(--border-w) solid var(--media-line); }
+.led-bar {
+  flex: 1; min-height: 10px; max-height: 18px; display: flex; align-items: center; padding: 0 var(--space-1);
+  border-radius: var(--radius-xs); background: var(--media-fill-faint); border: var(--border-w) solid var(--media-line);
+  transition: background-color var(--duration-instant) linear, box-shadow var(--duration-instant) linear;
+}
+.led-tag { display: none; }
+.led-bar.led-green.is-lit { background: var(--term-ok); border-color: var(--term-ok); box-shadow: 0 0 8px var(--success-glow); }
+.led-bar.led-amber.is-lit { background: var(--term-warn); border-color: var(--term-warn); box-shadow: 0 0 8px var(--warning-glow); }
+.led-bar.led-red.is-lit { background: var(--term-err); border-color: var(--term-err); box-shadow: 0 0 12px var(--danger-tint); }
+.scale-column { display: flex; flex-direction: column; justify-content: space-between; padding: var(--space-6) 0 var(--space-1); width: 44px; text-align: center; user-select: none; }
+.scale-mark { font-family: var(--font-mono); font-size: var(--text-2xs); line-height: var(--leading-snug); color: var(--media-text-faint); }
+.scale-mark.mark-clip { color: var(--term-err); font-weight: var(--weight-semibold); }
+.scale-mark.mark-amber { color: var(--term-warn); }
+.scale-mark.mark-green { color: var(--term-ok); }
+.audio-meta-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
+.audio-stat { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.audio-stat .readout { font-size: var(--text-sm); }
+
+/* ---------------------------------------------------------------- RTMP / stream key */
+.input-action-group { display: flex; gap: var(--space-2); align-items: center; }
+.input-action-group .input { flex: 1; min-width: 0; }
+.sk-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+
+/* ---------------------------------------------------------------- source feed */
+.source-feed-display { display: flex; flex-direction: column; }
+.source-badge-wrap { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-4); border-radius: var(--radius-lg); background: var(--bg-sunken); border: var(--border-w) solid var(--border); }
+.source-status-badge {
+  display: inline-flex; align-items: center; gap: var(--space-2); height: 28px; padding: 0 var(--space-3);
+  border-radius: var(--radius-full); background: var(--bg-elevated); border: var(--border-w) solid var(--border-strong);
+  font-size: var(--text-2xs); font-weight: var(--weight-semibold); letter-spacing: var(--tracking-wide); text-transform: uppercase; color: var(--text-dim);
+  transition: background-color var(--duration-slow) var(--ease-in-out), color var(--duration-slow) var(--ease-in-out), border-color var(--duration-slow) var(--ease-in-out);
+}
+.source-status-badge .icon { width: var(--icon-sm); height: var(--icon-sm); }
+.source-status-badge.source-zoom { background: var(--accent-tint); border-color: var(--accent-ring); color: var(--accent); }
+.source-status-badge.source-web { background: var(--warning-tint); border-color: var(--warning); color: var(--warning); }
+.source-feed-name { font-size: var(--text-base); color: var(--text); font-weight: var(--weight-medium); }
+.source-nav-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-2); }
+.source-nav-btn { justify-content: center; }
+.studio-quick-triggers { border-top: var(--border-w) solid var(--border); padding-top: var(--space-4); }
+
+/* ---------------------------------------------------------------- recording */
+.card-header-flex { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; margin-bottom: var(--space-4); }
+.card-header-flex .rack-title { margin: 0; flex: 1; }
+.banner-danger { background: var(--danger-tint); border-color: color-mix(in srgb, var(--danger) 30%, transparent); color: var(--danger); }
+.studio-master-actions .rec-duration-pill { height: var(--control-h-lg); }
+
+/* main.page has a view-transition-name, which makes it a stacking context:
+   the fixed chat drawer / safety modal inside it can't out-rank the sticky
+   topbar on their own z-index, so lift the page while one is open (main is
+   a flex item of .app-main, so z-index applies without a position change). */
+main.page:has(.studio-chat-drawer.is-open, .studio-modal-backdrop:not([hidden])) { z-index: var(--z-modal); }
+
+/* ---------------------------------------------------------------- slide-over chat */
+.studio-chat-backdrop {
+  position: fixed; inset: 0; background: var(--scrim); z-index: calc(var(--z-modal) - 1);
+  animation: fade-in var(--duration-base) var(--ease-out);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .studio-chat-backdrop { backdrop-filter: blur(var(--blur-xs)); -webkit-backdrop-filter: blur(var(--blur-xs)); }
+}
+.studio-chat-drawer {
+  position: fixed; top: var(--shell-gap); right: var(--shell-gap); bottom: var(--shell-gap);
+  width: calc(100% - var(--shell-gap) * 2); max-width: 420px;
+  background: var(--glass-tint-strong); border: var(--border-w) solid var(--glass-border); border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg); z-index: var(--z-modal); overflow: hidden;
+  display: flex; flex-direction: column;
+  transform: translateX(calc(100% + var(--shell-gap) * 2)); visibility: hidden;
+  transition: transform var(--duration-slow) var(--ease-in), visibility 0s linear var(--duration-slow);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .studio-chat-drawer { backdrop-filter: blur(var(--blur-xl)) saturate(var(--glass-sat)); -webkit-backdrop-filter: blur(var(--blur-xl)) saturate(var(--glass-sat)); }
+}
+.studio-chat-drawer.is-open { transform: none; visibility: visible; transition: transform var(--duration-slow) var(--ease-out); }
+.chat-drawer-header { display: flex; align-items: center; justify-content: space-between; padding: var(--space-3) var(--space-4); border-bottom: var(--border-w) solid var(--border); }
+.chat-drawer-title-group { display: flex; align-items: center; gap: var(--space-2); color: var(--text); }
+.chat-drawer-title-group .icon { color: var(--accent); }
+.chat-drawer-title { margin: 0; font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.chat-drawer-header-actions { display: flex; align-items: center; gap: var(--space-1); }
+.chat-drawer-config { padding: var(--space-3) var(--space-4); border-bottom: var(--border-w) solid var(--border); display: flex; flex-direction: column; gap: var(--space-1-5); }
+.chat-config-row { display: flex; gap: var(--space-2); }
+.chat-config-row .input { flex: 1; min-width: 0; }
+.chat-drawer-frame-wrap { flex: 1; position: relative; background: var(--bg-sunken); display: flex; flex-direction: column; }
+.chat-iframe { width: 100%; height: 100%; border: 0; flex: 1; }
+.chat-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: var(--space-6) var(--space-4); gap: var(--space-2); margin: auto; max-width: 320px; color: var(--text-dim); }
+.chat-placeholder > .icon { width: 44px; height: 44px; padding: var(--space-2-5); border-radius: var(--radius-lg); color: var(--text-faint); background: var(--bg-hover); }
+.chat-placeholder-title { font-size: var(--text-md); font-weight: var(--weight-semibold); color: var(--text); margin: 0; }
+
+/* ---------------------------------------------------------------- safety modal */
+.studio-modal-backdrop {
+  position: fixed; inset: 0; background: var(--scrim); z-index: var(--z-modal);
+  display: flex; align-items: center; justify-content: center; padding: var(--space-4);
+  animation: fade-in var(--duration-base) var(--ease-out);
+}
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+  .studio-modal-backdrop { backdrop-filter: blur(var(--blur-sm)); -webkit-backdrop-filter: blur(var(--blur-sm)); }
+}
+.studio-modal {
+  width: 100%; max-width: 460px; background: var(--bg-elevated); border: var(--border-w) solid var(--glass-border);
+  border-radius: var(--radius-2xl); box-shadow: var(--shadow-lg), 0 1px 0 var(--glass-edge-highlight) inset;
+  padding: var(--space-6); display: flex; gap: var(--space-4); position: relative;
+  animation: modal-in var(--duration-slow) var(--ease-spring);
+}
+.studio-modal-icon { width: 44px; height: 44px; border-radius: var(--radius-lg); background: var(--warning-tint); color: var(--warning); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.studio-modal-icon.icon-danger { background: var(--danger-tint); color: var(--danger); }
+.studio-modal-icon.icon-go-live { background: var(--success-tint); color: var(--success); }
+.studio-modal-icon .icon { width: var(--icon-lg); height: var(--icon-lg); }
+.studio-modal-content { flex: 1; display: flex; flex-direction: column; }
+.studio-modal-title { margin: 0 0 var(--space-2); font-size: var(--text-lg); font-weight: var(--weight-semibold); color: var(--text); }
+.studio-modal-body { margin: 0 0 var(--space-5); font-size: var(--text-sm); color: var(--text-dim); line-height: var(--leading-normal); }
+.studio-modal-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.studio-modal-actions .btn { min-width: 110px; }
+
+/* ---------------------------------------------------------------- responsive */
+@media (max-width: 1199px) {
+  .studio-stage { grid-template-columns: 1fr; grid-template-areas: "preview" "telem" "audio"; }
+  .telemetry-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 900px) {
+  .studio-row-split { grid-template-columns: 1fr; }
+}
+@media (max-width: 767px) {
+  .studio-master-bar { flex-direction: column; align-items: stretch; padding: var(--space-4); border-radius: var(--radius-xl); }
+  .studio-master-left { flex-direction: column; align-items: stretch; gap: var(--space-3); }
+  .studio-tally-strip { justify-content: space-between; width: 100%; }
+  .studio-master-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .studio-master-actions .btn { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .studio-master-actions .btn-studio-action { grid-column: 1 / -1; }
+  .studio-master-actions .rec-duration-pill { grid-column: 1 / -1; justify-content: center; }
+  .telemetry-grid { gap: var(--space-2); }
+  .telemetry-tile { padding: var(--space-3); min-height: 88px; }
+  .telem-val { font-size: var(--text-xl); }
+  .dual-ladder-wrap { padding: var(--space-2); gap: var(--space-2); }
+  .scale-column { width: 36px; }
+  .studio-modal { flex-direction: column; padding: var(--space-5); }
+  .studio-modal-actions { flex-direction: column-reverse; }
+  .studio-modal-actions .btn { width: 100%; }
+  .studio-chat-drawer { top: var(--space-2); right: var(--space-2); bottom: var(--space-2); width: calc(100% - var(--space-4)); max-width: none; }
+}
+@media (max-width: 420px) {
+  .channel-column { max-width: 110px; }
+  .audio-meta-row { grid-template-columns: 1fr 1fr; }
+}

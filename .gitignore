@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------- secrets and per-server data (never commit)
+.env
+.env.*
+!.env.example
+*.env
+!installer/config.example
+current-source.env*
+settings.json
+settings.json.*
+*.enc.json
+vault.locked
+master.key
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+*.db
+*.sqlite
+*.sqlite3
+answers.conf
+zoom-stream-credentials.txt
+*.conf.local
+
+# Runtime logs: ffmpeg.log contains the RTMP URL with the stream key; zoom/browser logs can contain meeting links.
+logs/
+*.log
+
+# Backups (contain the database, settings and encrypted secrets) and Chrome profile archives (cookies).
+backups/
+*.tar.gz
+*.tar.gz.sha256
+*.bak
+*.bak.*
+*.pre-vault-backup.*
+
+# Recordings and screenshots taken on a server
+recordings/
+*.mp4
+*.mkv
+*.flv
+
+# ---------------------------------------------------------------- Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+venv/
+.venv/
+dashboard/certs/
+dashboard/data/
+
+# ---------------------------------------------------------------- editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

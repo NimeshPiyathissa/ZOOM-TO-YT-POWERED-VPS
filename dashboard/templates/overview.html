@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon %}
+{% block title %}Overview - Zoom Stream Dashboard{% endblock %}
+{% block content %}
+
+<div class="dash-grid">
+
+  <!-- Hero: status ring + headline + metric chips + pill actions | live preview -->
+  <section class="card atrium-hero state-STOPPED" id="hero-card" aria-labelledby="hero-text">
+    <div class="hero-main">
+      <div class="hero-ring" aria-hidden="true">
+        <span class="dot-lg dot-STOPPED" id="hero-dot">
+          <svg viewBox="0 0 108 108">
+            <circle class="ring-bg" cx="54" cy="54" r="46"></circle>
+            <circle class="ring-fg" cx="54" cy="54" r="46"></circle>
+          </svg>
+        </span>
+        <span class="ring-glow"></span>
+        <span class="ring-label">
+          <span class="ring-word" id="hero-ring-word">&middot;&middot;&middot;</span>
+          <span class="ring-time tnum" id="hero-ring-time"></span>
+        </span>
+      </div>
+
+      <div class="hero-meta">
+        <div class="hero-eyebrow">
+          <span class="eyebrow">Program output</span>
+          <span class="badge badge-inactive restart-rate-badge" id="restart-rate-badge" hidden
+                aria-label="Restarts in the last 5 minutes">
+            {{ icon("rotate-cw", "icon-sm") }}<span id="restart-rate-text"></span>
+          </span>
+        </div>
+        <div class="hero-state" id="hero-state">
+          <h1 class="state-text skeleton" id="hero-text">Loading status</h1>
+          <p class="hint" id="hero-sub">Checking stream status&hellip;</p>
+        </div>
+
+        <div class="hero-chip-row" id="hero-chips" hidden>
+          <span class="hero-chip" id="hero-chip-bitrate">&mdash; kbps</span>
+          <span class="hero-chip" id="hero-chip-fps">&mdash; fps</span>
+          <span class="hero-chip" id="hero-chip-dropped">&mdash; dropped</span>
+          <span class="hero-chip" id="hero-chip-source">&mdash;</span>
+        </div>
+
+        <div class="hero-3d-source" id="hero-source" hidden>
+          <span id="hero-source-icon"></span>
+          <span id="hero-source-name" class="mono"></span>
+          <span class="src-url mono" id="hero-source-url"></span>
+          <button type="button" class="btn btn-ghost btn-icon btn-sm copy-url-btn" id="hero-source-copy" aria-label="Copy source URL" data-tooltip="Copy URL">{{ icon("copy", "icon-sm") }}</button>
+        </div>
+
+        <div class="btn-row hero-actions">
+          <button id="btn-go-live" class="btn btn-primary btn-lg">{{ icon("play", "icon-sm") }}Go Live</button>
+          <button id="btn-stop-stream" class="btn btn-danger btn-lg" hidden>{{ icon("square", "icon-sm") }}Stop</button>
+          <button id="btn-overview-record" class="btn btn-rec btn-lg" type="button"><span id="overview-rec-icon" class="rec-icon">⏺</span><span id="overview-rec-text">Start Recording</span></button>
+          <span id="overview-rec-pill" class="rec-duration-pill" hidden><span class="rec-pulse-dot">🔴</span> REC <span id="overview-rec-timer">00:00:00</span></span>
+          <button id="btn-restart-stream" class="btn btn-secondary btn-lg" data-tooltip="Restart the encoder">{{ icon("rotate-cw", "icon-sm") }}Restart</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero-3d-preview">
+      <span class="preview-tag" id="preview-tag" hidden><span class="dot"></span>Program</span>
+      <img id="preview-img" alt="Live preview of display :99" hidden>
+      <div class="empty-state p-0" id="preview-placeholder">
+        {{ icon("video") }}
+        <div class="empty-sub">No preview yet</div>
+      </div>
+    </div>
+  </section>
+
+  <div id="bcast-error-banner" hidden class="banner banner-error grid-col-full" role="alert">
+    {{ icon("alert-triangle") }}
+    <div>
+      <div id="bcast-error-headline">The broadcast stopped unexpectedly.</div>
+      <div class="hint mt-1 mono" id="bcast-error-detail"></div>
+      <div class="hint mt-1">It was not restarted automatically. Check the cause, then press Go Live yourself. <a href="/logs">Open the logs</a>.</div>
+      <button type="button" id="bcast-error-dismiss" class="btn btn-secondary btn-sm mt-2">Dismiss</button>
+    </div>
+  </div>
+
+  <div id="error-banner" hidden class="banner banner-error grid-col-full" role="alert">
+    {{ icon("alert-triangle") }}
+    <div>
+      <div id="error-banner-headline">The encoder has failed.</div>
+      <div class="hint mt-1 mono" id="error-banner-detail"></div>
+      <div class="hint mt-1"><a href="/logs">Check the logs</a> for the full history.</div>
+    </div>
+  </div>
+
+  <!-- Bento tool grid -->
+  <section class="bento" aria-label="Broadcast tools">
+    <a href="/studio" class="card card-link bento-tile span2 accent-cap">
+      <span class="tile-arrow">{{ icon("external-link", "icon-sm") }}</span>
+      <span class="icon-well">{{ icon("youtube") }}</span>
+      <h3>YouTube Live Studio Room</h3>
+      <p>Broadcast tally, telemetry, audio ladder and live chat in one room.</p>
+    </a>
+    <a href="/overlay" class="card card-link bento-tile accent-cap">
+      <span class="tile-arrow">{{ icon("external-link", "icon-sm") }}</span>
+      <span class="icon-well">{{ icon("type") }}</span>
+      <h3>Watermark Studio</h3>
+      <p>Text and logo watermarks on the stream.</p>
+    </a>
+    <div class="card bento-tile accent-cap">
+      <span class="icon-well">{{ icon("shuffle") }}</span>
+      <h3>Source &amp; Kiosk</h3>
+      <p>Switch meetings, pages and streams.</p>
+      <div class="btn-row">
+        <a href="/controls" class="btn btn-secondary btn-sm">{{ icon("shuffle", "icon-sm") }}Switch</a>
+        <a href="/remote" class="btn btn-secondary btn-sm">{{ icon("cast", "icon-sm") }}Remote Kiosk</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Equal stat tiles + wide health / restart tiles -->
+  <section class="overview-stats-grid" aria-label="System">
+    <div class="stat-tile-glass">
+      <div class="stat-k"><span class="eyebrow">CPU avg</span><span class="stat-aside tnum" id="load-sub">-</span></div>
+      <span class="stat-value tnum" id="cpu-avg">-<span class="stat-unit">%</span></span>
+      <div class="stat-progress"><div class="stat-progress-fill" id="stat-bar-cpu"></div></div>
+      <svg class="cpu-cores" id="cpu-cores" aria-hidden="true"></svg>
+      <div class="stat-foot" id="net-big-wrap">{{ icon("upload", "icon-sm") }}<span class="tnum" id="net-big">-</span><span>upload</span></div>
+      <svg class="sparkline" id="spark-net" aria-hidden="true"></svg>
+    </div>
+    <div class="stat-tile-glass">
+      <div class="stat-k"><span class="eyebrow">Memory</span><span class="stat-aside tnum" id="mem-sub">-</span></div>
+      <span class="stat-value tnum" id="mem-big">-</span>
+      <div class="stat-progress"><div class="stat-progress-fill" id="stat-bar-mem"></div></div>
+      <svg class="sparkline" id="spark-mem" aria-hidden="true"></svg>
+    </div>
+    <div class="stat-tile-glass">
+      <div class="stat-k"><span class="eyebrow">Disk</span><span class="stat-aside tnum" id="disk-sub">-</span></div>
+      <span class="stat-value tnum" id="disk-big">-</span>
+      <div class="stat-progress"><div class="stat-progress-fill" id="stat-bar-disk"></div></div>
+    </div>
+    <div class="stat-tile-glass">
+      <div class="stat-k"><span class="eyebrow">Account</span><span class="stat-aside">Zoom</span></div>
+      <div class="account-line">{{ icon("at-sign") }}<span id="account-status" class="skeleton">loading&hellip;</span></div>
+      <div class="btn-row mt-4">
+        <a href="/settings#zoom-account" class="btn btn-secondary btn-sm">{{ icon("log-in", "icon-sm") }}Sign-in</a>
+        <a href="/vnc" class="btn btn-ghost btn-sm">{{ icon("monitor", "icon-sm") }}Remote GUI</a>
+      </div>
+    </div>
+
+    <div class="stat-tile-glass span2">
+      <div class="health-card-head">
+        <h3 class="card-title">{{ icon("activity", "icon-sm") }}Stream health</h3>
+        <span class="hint m-0 tnum" id="ffmpeg-updated" hidden></span>
+      </div>
+      <div id="ffmpeg-stats">
+        <div class="empty-state" id="ffmpeg-empty">
+          {{ icon("activity") }}
+          <div class="empty-sub">No data yet &mdash; the stream isn't running.</div>
+        </div>
+        <div class="health-grid" id="ffmpeg-grid" hidden>
+          <div class="stat-tile">
+            <span class="eyebrow">FPS</span>
+            <span class="stat-value tnum" id="stat-fps">-</span>
+            <svg class="sparkline" id="spark-fps" aria-hidden="true"></svg>
+          </div>
+          <div class="stat-tile">
+            <span class="eyebrow">Speed</span>
+            <span class="stat-value tnum" id="stat-speed">-</span>
+            <svg class="sparkline" id="spark-speed" aria-hidden="true"></svg>
+          </div>
+          <div class="stat-tile">
+            <span class="eyebrow">Bitrate</span>
+            <span class="stat-value tnum" id="stat-bitrate">-</span>
+            <svg class="sparkline" id="spark-bitrate" aria-hidden="true"></svg>
+          </div>
+        </div>
+        <div class="hint mt-3 mono" id="ffmpeg-detail" hidden></div>
+        <div class="banner banner-warning mt-3" id="ffmpeg-warning" hidden>
+          {{ icon("alert-triangle") }}<div>Speed below 1.0x &mdash; the encoder may be dropping frames.</div>
+        </div>
+        <div class="hint mt-3" id="webpage-health" hidden></div>
+      </div>
+    </div>
+
+    <div class="stat-tile-glass span2" id="restart-rate-wide-tile">
+      <div class="stat-k"><span class="eyebrow">Restart rate</span><span class="stat-aside">last 5 min</span></div>
+      <span class="stat-value tnum"><span id="restart-rate-wide-text">0</span><span class="stat-unit">restarts</span></span>
+      <p class="hint mt-2 mb-0">Climbs when the encoder crash-loops. More than 3 in five minutes raises an alarm.</p>
+    </div>
+  </section>
+
+  <section class="card dash-services-wrap" aria-labelledby="services-title">
+    <div class="card-header"><h3 class="card-title" id="services-title">{{ icon("server", "icon-sm") }}Services</h3></div>
+    <div class="service-grid" id="unit-list"></div>
+    <h4 class="card-subtitle" style="margin:var(--space-4) 0 var(--space-2)">Server services</h4>
+    <div class="service-grid" id="system-services" aria-label="Dashboard and web server"></div>
+  </section>
+
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script type="application/json" id="units-data">{{ units | tojson }}</script>
+<script src="{{ static_url('js/overview.js') }}"></script>
+{% endblock %}

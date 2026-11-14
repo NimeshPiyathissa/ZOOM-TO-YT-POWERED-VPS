@@ -1,0 +1,12 @@
+# See the repository root .gitignore; these are repeated so the dashboard folder is safe on its own.
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+venv/
+certs/
+data/
+*.pem
+*.db
+settings.json
+settings.json.*
