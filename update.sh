@@ -5,6 +5,7 @@
 #   sudo ./update.sh --ref v1.1.0    update (or move) to a specific tag or branch
 #   sudo ./update.sh --check         only show whether an update is available
 #   sudo ./update.sh --yes           do not ask for confirmation
+#   --no-color                       plain output
 #
 # Order: refuse during a live stream -> backup -> git checkout -> redeploy (packages, scripts, services, dashboard)
 # -> database migration -> restart -> health check. On any failure: the previous version's code is checked out
@@ -21,6 +22,7 @@ while [[ $# -gt 0 ]]; do
     --ref) REF="${2:-}"; shift ;;
     --check) CHECK=1 ;;
     --yes|-y) YES=1 ;;
+    --no-color) export NO_COLOR=1; zs_init_colors ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) zs_die "Unknown option: $1 (see --help)" ;;
   esac

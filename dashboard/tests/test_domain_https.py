@@ -590,3 +590,16 @@ def test_setup_https_ip_only_hint_points_to_set_domain():
     assert "https://<vps-ip>" not in body
     assert "$0 --domain your.domain.example" not in body
     assert "set-domain.sh stream.example.com" in body
+
+
+@needs_bash
+@pytest.mark.parametrize("tool", ["install.sh", "update.sh", "backup.sh", "restore.sh", "doctor.sh", "set-domain.sh",
+                                  "uninstall.sh"])
+def test_every_tool_accepts_no_color_and_help_shows_only_the_header(tool):
+    # Found on the v1.0.0 test server: doctor.sh, uninstall.sh and update.sh rejected --no-color one after another.
+    r = subprocess.run([BASH, _posix(REPO / tool), "--no-color", "--help"], capture_output=True, text=True,
+                       timeout=30, stdin=subprocess.DEVNULL)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "Unknown option" not in out and "--no-color" in r.stdout
+    assert "set -" not in r.stdout and "#!/" not in r.stdout   # --help prints the header comment, nothing after it

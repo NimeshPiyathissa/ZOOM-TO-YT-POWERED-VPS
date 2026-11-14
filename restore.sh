@@ -3,6 +3,7 @@
 #
 #   sudo ./restore.sh                 pick a backup from a numbered list
 #   sudo ./restore.sh FILE [--yes]    restore that file
+#   --no-color                        plain output
 #
 # Refused while the encoder is running (a stream may be live). A safety backup of the current state is taken first,
 # so a restore can itself be undone. Only the dashboard is restarted; nothing is put on air.
@@ -10,6 +11,11 @@ set -euo pipefail
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=installer/lib/common.sh
 source "$SRC/installer/lib/common.sh"
+_args=()
+for _a in "$@"; do
+  if [[ "$_a" == --no-color ]]; then export NO_COLOR=1; zs_init_colors; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
 case "${1:-}" in -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;; esac
 [[ $EUID -eq 0 ]] || zs_die "Run as root: sudo $0"
 
