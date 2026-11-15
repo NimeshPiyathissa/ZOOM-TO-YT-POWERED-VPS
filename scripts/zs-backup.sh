@@ -141,6 +141,9 @@ restore() {
   if [[ -z "${ZS_ROOT:-}" ]]; then
     chown -R zoombot:zoombot /home/zoombot/zoom-stream /home/zoombot/.config/systemd/user 2>/dev/null || true
     chown -R dashboard:dashboard /home/dashboard/app /home/dashboard/data /home/dashboard/certs 2>/dev/null || true
+    # A backup made with --include-master-key carries /etc/zoom-stream's own mode; the dashboard must be able to enter
+    # it to read its key cache (installs made before v1.0.3 had it closed).
+    if [[ -d /etc/zoom-stream ]]; then chmod 755 /etc/zoom-stream; fi
     [[ -f /etc/sudoers.d/dashboard ]] && { chown root:root /etc/sudoers.d/dashboard; chmod 440 /etc/sudoers.d/dashboard;
       visudo -cf /etc/sudoers.d/dashboard >/dev/null || say "WARNING: restored sudoers file does not validate - check it with visudo"; }
     systemctl daemon-reload

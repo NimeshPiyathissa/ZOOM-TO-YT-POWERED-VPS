@@ -126,6 +126,16 @@ zs_parse_kv_file() {
   return "$bad"
 }
 
+# /etc/zoom-stream is shared: the installer keeps its private state in installer/ (root only), and the dashboard keeps
+# the vault's key cache there as master.key (root:dashboard, 640). The dashboard service user must therefore be able to
+# ENTER the directory - with 700 it cannot read its key, the secret store stays locked and the Remote GUI cannot log in
+# to x11vnc. Only the installer/ sub-directory is private.
+zs_fix_etc_perms() {
+  mkdir -p "$ZS_STATE_DIR"
+  chmod 755 "$ZS_ETC_DIR" 2>/dev/null || true
+  chmod 700 "$ZS_STATE_DIR" 2>/dev/null || true
+}
+
 zs_get() { local n="ANS_$1"; printf '%s' "${!n:-}"; }
 zs_set() { printf -v "ANS_$1" '%s' "$2"; }
 
@@ -134,7 +144,7 @@ zs_set() { printf -v "ANS_$1" '%s' "$2"; }
 zs_save_answers() {
   local tmp key
   mkdir -p "$ZS_STATE_DIR"
-  chmod 700 "$ZS_ETC_DIR" "$ZS_STATE_DIR" 2>/dev/null || true
+  zs_fix_etc_perms
   tmp="$(mktemp "${ZS_STATE_DIR}/.answers.XXXXXX")"
   chmod 600 "$tmp"
   {
@@ -222,6 +232,11 @@ zs_user_systemctl() {
   local uid
   uid="$(id -u "$ZS_SVC_USER")"
   sudo -u "$ZS_SVC_USER" XDG_RUNTIME_DIR="/run/user/${uid}" systemctl --user "$@"
+}
+
+# zs_dashboard_selfcheck [--require-vnc] - run the dashboard's read-only self-test as its service user.
+zs_dashboard_selfcheck() {
+  (cd "$ZS_DASH_HOME/app" && sudo -u "$ZS_DASH_USER" "$ZS_DASH_HOME/venv/bin/python" -m app.cli selfcheck "$@")
 }
 
 # True when the broadcast encoder is up. Unknown counts as "up": refusing is always safer than touching a live class.

@@ -155,7 +155,15 @@ if [[ -f /etc/sudoers.d/dashboard ]]; then
   else prob "The dashboard sudoers rule is invalid" "Re-deploy it: sudo bash $SRC/install.sh --upgrade"; fi
 else prob "Dashboard sudoers rule is missing" "Re-deploy it: sudo bash $SRC/install.sh --upgrade"; fi
 if [[ -f "$ZS_DASH_HOME/data/secrets.enc.json" ]]; then
-  if [[ -f /etc/zoom-stream/master.key ]]; then pass "Encrypted secret store present, unlocks automatically at boot" \
+  if [[ -f /etc/zoom-stream/master.key ]]; then
+    # Asked as the dashboard's own user: a key file that exists but that the service cannot reach is no use.
+    # shellcheck disable=SC2119  # no options: a stopped x11vnc is reported by the Services section above
+    if selfcheck_out="$(zs_dashboard_selfcheck 2>&1)"; then pass "Encrypted secret store unlocks automatically; Remote GUI password works"
+    else
+      prob "The dashboard cannot unlock its secret store or log in to the remote screen (the Remote GUI will not connect)" \
+           "$(grep -E '^\[FAIL\]' <<<"$selfcheck_out" | head -n 2 | tr '\n' ' ')" \
+           "Usual fix: sudo chmod 755 /etc/zoom-stream && sudo systemctl restart dashboard   (or: sudo bash $SRC/update.sh)"
+    fi
   else warn "Encrypted secret store is present but has no automatic unlock key" "Unlock it after each reboot: sudo $ZS_DASH_HOME/venv/bin/python -m app.cli vault unlock (run in $ZS_DASH_HOME/app)"; fi
 else warn "No encrypted secret store yet" "It is created during installation (app.cli setup)."; fi
 if [[ -f "$ZS_CREDENTIALS_FILE" ]]; then

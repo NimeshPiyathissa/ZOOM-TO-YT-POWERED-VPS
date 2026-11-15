@@ -100,6 +100,10 @@ async def _authenticate_upstream(upstream) -> None:
         challenge = await reader.read(16)
         password = vncauth.current_password()
         if not password:
+            from . import secret_store
+            if secret_store.is_initialized() and not secret_store.is_unlocked():
+                raise AuthError("the encrypted secret store is locked, so the VNC password is not available "
+                                "(run doctor.sh on the server)")
             raise AuthError("x11vnc wants a VNC password but none is configured (.env VNC_PASSWORD)")
         await upstream.send(vncauth.challenge_response(challenge, password))
         result = int.from_bytes(await reader.read(4), "big")

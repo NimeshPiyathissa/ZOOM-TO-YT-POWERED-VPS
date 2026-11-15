@@ -262,6 +262,9 @@ EOF
 zs_step_dashboard() {
   local mode="install"
   [[ "$ZS_MODE" == "upgrade" ]] && mode="upgrade"
+  # Before the dashboard is (re)started below: it reads its vault key cache from /etc/zoom-stream at start-up.
+  # This also repairs installs made by v1.0.0 - v1.0.2, which left that directory closed to the dashboard user.
+  zs_fix_etc_perms
   # install-dashboard.sh runs `app.cli setup` non-interactively from these variables (never argv, never logged).
   ZOOMBOT_MASTER_PASSWORD="$(zs_get MASTER_PASSWORD)" \
   ZOOMBOT_ADMIN_USERNAME="$(zs_get ADMIN_USERNAME)" \
@@ -326,6 +329,9 @@ zs_step_verify() {
     zs_user_systemctl is-active --quiet "$u" || { echo "service $u is not running"; zs_user_systemctl status "$u" --no-pager || true; return 1; }
   done
   if zs_user_systemctl is-active --quiet ffmpeg-stream; then echo "encoder is running - it must not be"; return 1; fi
+  # As the dashboard's own user: the secret store unlocks from its key cache and the Remote GUI password really logs
+  # in to x11vnc. A page that merely loads proves neither.
+  zs_dashboard_selfcheck --require-vnc || { echo "dashboard self-check failed (see the lines above)"; return 1; }
   echo "health check passed"
 }
 

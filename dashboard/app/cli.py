@@ -3,6 +3,7 @@
   python -m app.cli migrate-sources           (Change 1, one-time/idempotent)
   python -m app.cli vault <init|unlock|change-master-password|set-unlock-mode|reset>
   python -m app.cli setup                     (Part 3: full first-run flow)
+  python -m app.cli selfcheck [--require-vnc] (read-only: vault auto-unlock + VNC login, as the dashboard user)
   python -m app.cli migrate-secrets [--dry-run] [--redact]
 No default admin password (or master password, or VNC password) is ever
 created - setup/set-password must be run once at install time (see
@@ -385,9 +386,99 @@ def cmd_migrate_secrets() -> None:
               "or call redact_all_plaintext() directly.")
 
 
+def _vnc_login(host: str, port: int, password: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """One RFB 3.8 login against x11vnc, exactly what the Remote GUI proxy does. Returns (ok, reason); never prints or
+    returns the password. Disconnects right after the security result, so nothing is displayed or controlled."""
+    import socket
+    from . import vncauth
+
+    def read(sock, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = sock.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError("connection closed by x11vnc")
+            buf += chunk
+        return buf
+
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+    except OSError:                                              # refused, unreachable or no answer at all
+        return False, "x11vnc is not running (nothing answers on its port)"
+    try:
+        with sock:
+            sock.settimeout(timeout)
+            if not read(sock, 12).startswith(b"RFB 003."):
+                return False, "the service on the VNC port is not a VNC server"
+            sock.sendall(b"RFB 003.008\n")
+            count = read(sock, 1)[0]
+            if count == 0:
+                return False, "x11vnc refused the connection"
+            types = read(sock, count)
+            if 2 not in types:                                   # 2 = VNC authentication, 1 = none
+                return (True, "x11vnc asks for no password") if 1 in types else (False, "no supported security type")
+            sock.sendall(bytes([2]))
+            challenge = read(sock, 16)
+            if not password:
+                return False, "x11vnc asks for a password, but the dashboard has none available"
+            sock.sendall(vncauth.challenge_response(challenge, password))
+            if int.from_bytes(read(sock, 4), "big") != 0:
+                return False, "x11vnc rejected the dashboard's stored VNC password"
+            return True, "x11vnc accepted the dashboard's stored VNC password"
+    except (OSError, ConnectionError) as exc:
+        return False, f"could not talk to x11vnc ({type(exc).__name__})"
+
+
+def cmd_selfcheck(argv: list[str] | None = None) -> None:
+    """Read-only self-test of what a loading page cannot prove. Run it as the dashboard service user:
+      1. the encrypted secret store unlocks from its key cache (cached unlock mode), and
+      2. the stored VNC password really logs in to x11vnc (the Remote GUI depends on it).
+    Prints one line per check, never a secret. Exit status 0 = fine, 1 = a problem was found."""
+    from . import config, secret_store, vncauth
+
+    parser = argparse.ArgumentParser(prog="app.cli selfcheck", description=cmd_selfcheck.__doc__)
+    parser.add_argument("--require-vnc", action="store_true", help="x11vnc not running counts as a problem")
+    args = parser.parse_args(sys.argv[2:] if argv is None else argv)
+    problems = 0
+
+    meta = secret_store.read_meta()
+    if meta is None:
+        print("[warn] secret store: not created yet (it is created during installation)")
+    elif meta.get("unlock_mode") != "cached":
+        print("[ok]   secret store: manual unlock mode - unlocked by hand after each start")
+    elif meta.get("manually_locked"):
+        print("[ok]   secret store: locked on purpose (vault lock) - unlock it to use the Remote GUI")
+    elif secret_store.try_auto_unlock():
+        print("[ok]   secret store: unlocks automatically from its key cache")
+    else:
+        problems += 1
+        key = config.MASTER_KEY_CACHE_FILE
+        if not os.access(str(key.parent), os.X_OK):
+            why = f"this user cannot enter {key.parent} (fix: sudo chmod 755 {key.parent} && sudo systemctl restart dashboard)"
+        elif not key.exists():
+            why = f"the key cache {key} is missing (fix: sudo python -m app.cli vault unlock)"
+        elif not os.access(str(key), os.R_OK):
+            why = f"this user cannot read {key} (expected root:{config.DASHBOARD_GROUP}, mode 640)"
+        else:
+            why = "the cached key does not open the store (changed master password? run: vault unlock)"
+        print(f"[FAIL] secret store: cannot unlock automatically - {why}")
+
+    ok, reason = _vnc_login("127.0.0.1", 5900, vncauth.current_password())   # x11vnc, loopback only (scripts/start-vnc.sh)
+    if ok:
+        print(f"[ok]   remote screen: {reason}")
+    elif reason.startswith("x11vnc is not running") and not args.require_vnc:
+        print(f"[warn] remote screen: {reason}")
+    else:
+        problems += 1
+        print(f"[FAIL] remote screen: {reason}")
+    sys.exit(1 if problems else 0)
+
+
 def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd == "set-password":
+    if cmd == "selfcheck":
+        cmd_selfcheck()
+    elif cmd == "set-password":
         cmd_set_password(sys.argv[2:])     # the subcommand name is NOT a username
     elif cmd == "migrate-sources":
         cmd_migrate_sources()
