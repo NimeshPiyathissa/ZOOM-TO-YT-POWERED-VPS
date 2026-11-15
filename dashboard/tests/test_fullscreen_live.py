@@ -125,7 +125,10 @@ def _bash(snippet, env=None):
         start = body.index(f"{name}() {{")
         funcs.append(body[start:body.index("\n}\n", start) + 3])
     script = "\n".join(funcs) + "\n" + snippet
-    return subprocess.run([BASH, "-c", script], capture_output=True, text=True, env={**os.environ, **(env or {})}).stdout
+    # Never ask a real X server for its size: on a machine that runs the stream (display :99) build_capture_framing
+    # would follow that screen instead of the sizes the test sets.
+    return subprocess.run([BASH, "-c", script], capture_output=True, text=True,
+                          env={**os.environ, "DISPLAY": ":zs-test-no-display", **(env or {})}).stdout
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")

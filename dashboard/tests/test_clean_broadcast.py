@@ -107,7 +107,7 @@ def _bash(snippet, env=None):
         start = body.index(f"{name}() {{")
         funcs.append(body[start:body.index("\n}\n", start) + 3])
     return subprocess.run([BASH, "-c", "\n".join(funcs) + "\n" + snippet], capture_output=True, text=True,
-                          env={**os.environ, **(env or {})}).stdout
+                          env={**os.environ, "DISPLAY": ":zs-test-no-display", **(env or {})}).stdout
 
 
 @pytest.mark.skipif(BASH is None, reason="bash not available")
