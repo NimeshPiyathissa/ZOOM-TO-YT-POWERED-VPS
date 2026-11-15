@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.0.2] - 2026-11-14
+## [1.0.2] - 2026-11-15
 
 Audit release: the public installer was compared with a working production server and tested on a server again.
 
