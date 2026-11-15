@@ -526,3 +526,56 @@ def test_output_preset_says_so_when_the_output_is_larger_than_the_virtual_screen
     assert "1280x720" in r["message"] and "enlarged" in r["message"] and "docs/configuration.md" in r["message"]
     assert "DISPLAY_SIZE" not in written[0]                               # an existing screen size is never overwritten
     assert api.st["unit_calls"] == []                                     # and nothing is restarted
+
+
+# ---------------------------------------------------------------- v1.0.4: a framing CHOICE must reach the encoder
+#
+# The bug: in Live Studio, picking "Fill 16:9" / "Blurred picture" while Clean Broadcast was off sent action=settings.
+# The server only remembered the choice ("Saved - used when Clean Broadcast is switched on"), the panel showed it as
+# selected and showed no status, and the encoder went on air with no framing at all. On the Output page the
+# "Cut and fill anyway" button did the same, and a refused choice still looked selected.
+
+JS = REPO / "dashboard" / "static" / "js"
+
+
+def test_a_choice_saved_while_framing_is_off_says_plainly_that_it_is_not_applied(api):
+    d = post(api, action="settings", policy="fill", background="blur").json()
+    assert d["ok"] and d["active"] is False and d["applied"] is False
+    assert "NOT applied" in d["message"] and "Clean Broadcast" in d["message"]
+    o = opts(api)
+    assert o.get("clean_policy") == "fill" and not o.get("clean_broadcast") and not o.get("clean_filter")
+    state = api.get("/api/zoom/clean-broadcast").json()
+    assert state["applied"] is False and state["prefs"]["policy"] == "fill"       # remembered, and reported as not applied
+
+
+def test_choosing_fill_while_off_the_way_the_pages_now_do_it_reaches_the_encoder(api):
+    """What the panels send now: action=apply (not settings) while framing is off, then the explicit crop confirmation."""
+    r = post(api, action="apply", policy="fill", background="blur")
+    assert r.status_code == 409 and r.json()["needs_confirm"]
+    assert not opts(api).get("clean_broadcast")                                   # nothing half-applied
+    d = post(api, action="apply", policy="fill", background="blur", confirm_crop=True).json()
+    assert d["ok"] and d["applied"] is True and d["plan"]["policy"] == "fill"
+    o = opts(api)
+    assert o["clean_broadcast"] is True and o["clean_filter"] and o["clean_policy"] == "fill"
+    assert api.get("/api/zoom/clean-broadcast").json()["applied"] is True
+
+
+def test_live_studio_panel_switches_framing_on_when_a_choice_is_made_and_shows_that_it_is_off():
+    src = (JS / "clean-broadcast.js").read_text(encoding="utf-8")
+    handler = src[src.index('root.querySelectorAll("[data-cb-policy], [data-cb-background]")'):]
+    assert 'run(last && last.active ? "settings" : "apply", root)' in handler[:260]
+    assert 'el.addEventListener("change", () => run("settings", root))' not in src       # the old, remember-only handler
+    status = src[src.index("function statusText(s)"):src.index("function sideList")]
+    assert 'if (!s.active || !s.plan) return "";' not in status                          # off is never shown as nothing
+    assert "the stream shows the whole screen" in status
+    assert "res.applied !== false" in src                                                # not-applied is never a green toast
+
+
+def test_output_page_confirming_fill_applies_it_and_never_shows_an_unsaved_choice_as_selected():
+    src = (JS / "output.js").read_text(encoding="utf-8")
+    confirm = src[src.index("if (confirm) confirm.addEventListener"):]
+    assert 'send(last && last.active ? "settings" : "apply", { policy: "fill", confirm_crop: true })' in confirm[:200]
+    assert "last.prefs = prefs" not in src and "last.prefs.background = " not in src     # no optimistic selection
+    failed = src[src.index('say(err.message || "Failed", "err");'):]
+    assert 'render(await apiFetch("/api/zoom/clean-broadcast"))' in failed[:160]         # after an error: the server's state
+    assert "res.applied === false" in src

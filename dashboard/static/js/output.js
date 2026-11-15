@@ -50,7 +50,8 @@
     ((p && p.warnings) || []).forEach((w) => items.push(w));
     $("[data-out-warnings]").innerHTML = items.map((w) => `<li class="cb-warn cb-warn-${esc(w.level)}">${w.html || esc(w.text)}</li>`).join("");
     const confirm = root.querySelector("[data-out-confirm-fill]");
-    if (confirm) confirm.addEventListener("click", () => send("settings", { policy: "fill", confirm_crop: true }));
+    // While framing is off, "settings" would only remember the choice: confirming Fill must switch it on ("apply").
+    if (confirm) confirm.addEventListener("click", () => send(last && last.active ? "settings" : "apply", { policy: "fill", confirm_crop: true }));
     drawOverlay(p);
   }
 
@@ -109,7 +110,7 @@
       setBusy(false);
       render(await apiFetch("/api/zoom/clean-broadcast"));
       $("[data-out-status]").textContent = res.message || "";
-      say(`${res.message || "Saved."} ${res.applies || ""}`.trim(), res.pending_restart ? "warn" : "ok");
+      say(`${res.message || "Saved."} ${res.applies || ""}`.trim(), res.pending_restart || res.applied === false ? "warn" : "ok");
       loadPreviews();
     } catch (err) {
       setBusy(false);
@@ -119,19 +120,17 @@
         return;
       }
       say(err.message || "Failed", "err");
-      render(last);
+      try { render(await apiFetch("/api/zoom/clean-broadcast")); } catch (e) { render(last); }
     }
   }
 
   async function choose(policy) {
-    const prefs = Object.assign({}, (last && last.prefs) || {}, { policy });
-    if (last) last.prefs = prefs;
+    // The buttons show what the SERVER saved (render), never a choice that has not been accepted yet.
     await send(last && last.active ? "settings" : "apply", { policy });
   }
 
   $$("[data-out-mode]").forEach((b) => b.addEventListener("click", () => choose(b.dataset.outMode)));
   $$("[data-out-bg]").forEach((b) => b.addEventListener("click", () => {
-    if (last && last.prefs) last.prefs.background = b.dataset.outBg;
     send(last && last.active ? "settings" : "apply", { background: b.dataset.outBg });
   }));
   $$("[data-out-preset]").forEach((b) => b.addEventListener("click", async () => {

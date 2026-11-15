@@ -24,7 +24,7 @@
   function statusText(s) {
     if (!s) return "";
     if (s.zoom_source === false) return "Zoom source not active";
-    if (!s.active || !s.plan) return "";
+    if (!s.active || !s.plan) return "Off · the stream shows the whole screen";
     const head = s.plan.label || s.plan.state;
     return s.pending_restart ? `${head} · applies at next authorized start` : head;
   }
@@ -151,7 +151,8 @@
       const full = await apiFetch("/api/zoom/clean-broadcast").catch(() => res);
       render(Object.assign({}, full, { kept: res.kept, message: res.message }));
       const st = res.state || "";
-      say(`${res.message || "Done."} ${res.applies || ""}`.trim(), st === "clean" || st === "composed" || action === "restore" ? (res.pending_restart ? "warn" : "ok") : "warn");
+      const fine = action === "restore" || ((st === "clean" || st === "composed") && res.applied !== false);
+      say(`${res.message || "Done."} ${res.applies || ""}`.trim(), fine ? (res.pending_restart ? "warn" : "ok") : "warn");
       loadPreviews();
     } catch (err) {
       busy = false;
@@ -177,8 +178,12 @@
     root.querySelector("[data-cb-apply]")?.addEventListener("click", () => run("apply", root));
     root.querySelector("[data-cb-restore]")?.addEventListener("click", () => run("restore", root));
     root.querySelector("[data-cb-preview]")?.addEventListener("click", () => loadPreviews());
-    root.querySelectorAll("[data-cb-policy], [data-cb-background], [data-cb-source]").forEach((el) =>
-      el.addEventListener("change", () => run("settings", root)));
+    // A framing or background choice must reach the encoder, not just be remembered: while Clean Broadcast is off,
+    // choosing one switches it on (measures the meeting now), exactly like the Output page. Once it is on, a change
+    // only re-plans from the saved measurement.
+    root.querySelectorAll("[data-cb-policy], [data-cb-background]").forEach((el) =>
+      el.addEventListener("change", () => run(last && last.active ? "settings" : "apply", root)));
+    root.querySelector("[data-cb-source]")?.addEventListener("change", () => run("settings", root));
   });
   refresh().then(() => { if (roots.some((r) => r.dataset.variant === "panel")) loadPreviews(); });
   setInterval(() => { if (!document.hidden) refresh(); }, 15000);

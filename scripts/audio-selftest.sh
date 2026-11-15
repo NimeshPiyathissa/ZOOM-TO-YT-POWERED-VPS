@@ -26,6 +26,11 @@ DUR=6
 TONE="$LOG_DIR/audio-selftest-tone.wav"
 OUT="$LOG_DIR/audio-selftest.mp4"
 RESOLUTION="${RESOLUTION:-1280x720}"
+# Same capture size + framing as the broadcast (lib.sh): the size comes from the REAL screen, never from RESOLUTION
+# alone - asking x11grab for more than the screen has makes ffmpeg refuse to start.
+build_capture_framing "$RESOLUTION"
+VF_ARGS=()
+if [[ -n "$CROP_FILTER" ]]; then VF_ARGS=(-vf "$CROP_FILTER"); fi
 
 ffmpeg -hide_banner -loglevel error -y -f lavfi -i "sine=frequency=440:sample_rate=48000" -t $((DUR + 3)) -ac 2 -c:a pcm_s16le "$TONE" \
   || { echo '{"ok": false, "error": "could not synthesize the test tone"}'; exit 1; }
@@ -38,9 +43,9 @@ METER="$(python3 ./audio-level.py --seconds 2 2>/dev/null | tail -n1)"
 PEAK="$(grep -oE '"peak_db": *-?[0-9.]+' <<<"$METER" | grep -oE -- '-?[0-9.]+$')"
 
 ffmpeg -hide_banner -loglevel error -y \
-  -f x11grab -video_size "$RESOLUTION" -framerate 30 -draw_mouse 0 -thread_queue_size 1024 -i "$DISPLAY" \
+  -f x11grab -video_size "$CAPTURE_SIZE" -framerate 30 -draw_mouse 0 -thread_queue_size 1024 -i "$DISPLAY" \
   -f pulse -thread_queue_size 1024 -i zoom_out.monitor \
-  -af "aresample=async=1:first_pts=0" -t "$DUR" \
+  ${VF_ARGS[@]+"${VF_ARGS[@]}"} -af "aresample=async=1:first_pts=0" -t "$DUR" \
   -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac -b:a 160k -ar 48000 -ac 2 "$OUT"
 REC_RC=$?
 wait "$TONE_PID" 2>/dev/null

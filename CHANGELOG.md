@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **A framing choice made while framing was off never reached the encoder.** In Live Studio (and Remote GUI), picking
+  "Fill 16:9" or a background such as "Blurred picture" before pressing Clean Broadcast was only remembered: the panel
+  showed it as selected, showed no status, and the stream went out showing the whole screen. Choosing now switches
+  framing on (the meeting is measured), as on the Output page; the panel says "Off - the stream shows the whole
+  screen" while it is off, and the server's answer says plainly when a choice is saved but not applied.
+- Output page: "Cut and fill anyway" applied nothing while framing was off, and a refused choice still looked
+  selected. The buttons now always show what the server saved.
+- The audio self-test and the local recorder took their capture size from the output resolution and failed with
+  "Error opening input files: Invalid argument" when the output was larger than the screen (the same fault v1.0.3
+  fixed for the broadcast and test recordings). Both now use the real screen size.
+
 ## [1.0.3] - 2026-11-15
 
 ### Fixed

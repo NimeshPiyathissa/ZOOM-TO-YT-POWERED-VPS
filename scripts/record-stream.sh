@@ -116,12 +116,12 @@ action_start() {
 
   local display="${DISPLAY:-:99}"
   local fps="${FPS:-30}"
-  local resolution="${RESOLUTION:-}"
-  if [[ -z "$resolution" ]]; then
-    local detected_res
-    detected_res="$(xdpyinfo -display "$display" 2>/dev/null | grep 'dimensions:' | awk '{print $2}')"
-    resolution="${detected_res:-1280x720}"
-  fi
+  # The recording is the screen as it is: its size comes from the REAL screen first. RESOLUTION (the broadcast output)
+  # can be larger than the screen, and x11grab refuses to capture more than the screen has.
+  local resolution detected_res
+  detected_res="$(xdpyinfo -display "$display" 2>/dev/null | awk '/dimensions:/{print $2; exit}' || true)"
+  if [[ "$detected_res" =~ ^[0-9]+x[0-9]+$ ]]; then resolution="$detected_res"
+  else resolution="${RESOLUTION:-1280x720}"; fi
 
   # Write initial status
   cat > "$STATUS_FILE" <<EOF

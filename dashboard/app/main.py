@@ -1383,7 +1383,9 @@ def _cb_plan(display, layout, prefs) -> dict:
 
 
 def _cb_status(options: dict) -> dict:
-    return {"active": bool(options.get("clean_broadcast")), "plan": options.get("clean_plan") or None,
+    # "applied" says in one word whether the ENCODER gets this framing. A saved choice (prefs) alone changes nothing.
+    return {"active": bool(options.get("clean_broadcast")), "applied": bool(options.get("clean_broadcast")),
+            "plan": options.get("clean_plan") or None,
             "restore_available": bool(options.get("clean_restore")),
             "prefs": {k[6:]: v for k, v in _cb_prefs(options).items()}}
 
@@ -1533,7 +1535,9 @@ async def api_zoom_clean_broadcast(request: Request):
             options.update(prefs)
             await run_in_threadpool(sources_mod.update_source, active["id"], source["name"], "zoom", source["url"],
                                     options, source.get("account_id"))
-            return {"ok": True, "action": "settings", "message": "Saved - used when Clean Broadcast is switched on.",
+            return {"ok": True, "action": "settings",
+                    "message": ("Saved as your choice, but NOT applied to the stream yet: the stream still shows the "
+                                "whole screen. Press Clean Broadcast while the meeting is on screen to apply it."),
                     **_cb_status(options), "encoder_phase": phase,
                     "pending_restart": await run_in_threadpool(control.encoder_filter_stale)}
         if layout.get("size") != "%dx%d" % display:
