@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-11-15
+
+### Fixed
+- **Remote GUI on fresh installs** ("VNC authentication failed"): the installer closed `/etc/zoom-stream` to root
+  only, so the dashboard could not read its vault key cache there, the secret store stayed locked and no VNC password
+  was available. Affects every install made with v1.0.0 - v1.0.2. The directory is enterable again (the installer's
+  own `installer/` sub-directory stays private); `update.sh` repairs existing installs, and so does a restore.
+
+### Added
+- `app.cli selfcheck`: as the dashboard user, checks that the secret store unlocks automatically and that the stored
+  VNC password really logs in to x11vnc. The installer's and updater's health check and `doctor.sh` now use it, so
+  this kind of fault fails the install instead of passing unnoticed.
+- The Remote GUI's error says when the secret store is locked instead of "no password configured".
+
 ## [1.0.2] - 2026-11-15
 
 Audit release: the public installer was compared with a working production server and tested on a server again.

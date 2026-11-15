@@ -41,7 +41,7 @@ The **Logs** page in the dashboard shows the same, with secrets redacted.
 | Certificate warning | Expected with `self-signed` / IP-only and with `--staging` test certificates. With a domain: `sudo bash /opt/zoom-stream/set-domain.sh --check` names the problem; see [Subdomain, DNS and HTTPS](domain-and-https.md#12-troubleshooting-dns-and-certificates). |
 | "Too many failed attempts" | 5 failed sign-ins lock that username from that address for 15 minutes. Wait, or reset the password ([configuration.md](configuration.md#admin-password)). |
 | Forgot the admin password | `cd /home/dashboard/app && sudo -u dashboard /home/dashboard/venv/bin/python -m app.cli set-password admin` |
-| Remote GUI will not connect after a reboot | The encrypted store (which holds the VNC password) could not unlock automatically. `doctor.sh` checks this; see [encryption.md](encryption.md#unlock-modes). |
+| Remote GUI shows "VNC authentication failed" / will not connect | The encrypted store (which holds the VNC password) could not unlock automatically. `sudo bash /opt/zoom-stream/doctor.sh` names the cause. On installs made before v1.0.3: `sudo chmod 755 /etc/zoom-stream && sudo systemctl restart dashboard` (or update). See [encryption.md](encryption.md#unlock-modes). |
 
 ## Zoom
 
