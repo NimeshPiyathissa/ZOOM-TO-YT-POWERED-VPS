@@ -239,6 +239,13 @@ zs_dashboard_selfcheck() {
   (cd "$ZS_DASH_HOME/app" && sudo -u "$ZS_DASH_USER" "$ZS_DASH_HOME/venv/bin/python" -m app.cli selfcheck "$@")
 }
 
+# zs_capture_check - one frame through the encoder's capture settings, as the service user (scripts/capture-check.sh).
+zs_capture_check() {
+  local uid
+  uid="$(id -u "$ZS_SVC_USER")"
+  sudo -u "$ZS_SVC_USER" XDG_RUNTIME_DIR="/run/user/${uid}" "$ZS_APP_DIR/scripts/capture-check.sh"
+}
+
 # True when the broadcast encoder is up. Unknown counts as "up": refusing is always safer than touching a live class.
 zs_encoder_running() {
   id "$ZS_SVC_USER" &>/dev/null || return 1

@@ -332,6 +332,8 @@ zs_step_verify() {
   # As the dashboard's own user: the secret store unlocks from its key cache and the Remote GUI password really logs
   # in to x11vnc. A page that merely loads proves neither.
   zs_dashboard_selfcheck --require-vnc || { echo "dashboard self-check failed (see the lines above)"; return 1; }
+  # One real frame through the encoder's own capture settings: Go Live must not be the first time this is tried.
+  zs_capture_check || { echo "screen capture check failed (see the line above)"; return 1; }
   echo "health check passed"
 }
 

@@ -161,7 +161,9 @@ def _posix(p):
 @pytest.mark.skipif(BASH is None, reason="bash not available")
 @pytest.mark.parametrize("fsl,expect_size,expect_vf", [
     (True, "1920x1080", "crop=1600:900:160:90,scale=1280:720:flags=lanczos,setsar=1"),
-    (False, "1280x720", None),
+    # No framing mode, 1920x1080 screen, 1280x720 output: the WHOLE screen is captured and scaled. (Until v1.0.2 this
+    # grabbed only the top-left 1280x720 of the screen - and failed outright when the output was larger than the screen.)
+    (False, "1920x1080", "scale=1280:720:flags=lanczos,setsar=1"),
 ])
 def test_stream_sh_captures_whole_desktop_and_applies_the_box(tmp_path, fsl, expect_size, expect_vf):
     app_dir = tmp_path / "zs"

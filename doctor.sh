@@ -76,6 +76,19 @@ if id "$ZS_SVC_USER" &>/dev/null; then
     else prob "$u is ${st:-unknown}" "Recent log: sudo -u $ZS_SVC_USER XDG_RUNTIME_DIR=/run/user/$(id -u "$ZS_SVC_USER") journalctl --user -u $u -n 30 --no-pager" \
               "Use 'Restart all services' on the dashboard, or reboot the server."; fi
   done
+  # One real frame through the encoder's own capture settings (no stream is started): catches a capture size that
+  # does not fit the virtual screen, a broken framing filter or a missing audio source before Go Live does.
+  if capture_out="$(zs_capture_check 2>&1)"; then
+    case "$capture_out" in
+      *"LARGER than the screen"*) warn "Screen capture works, but the output is larger than the virtual screen (enlarged, not sharper)" \
+                                       "$(tail -n1 <<<"$capture_out" | cut -c1-200)" ;;
+      *) pass "Screen capture works ($(tail -n1 <<<"$capture_out" | sed 's/^capture check: OK - //' | cut -c1-120))" ;;
+    esac
+  else
+    prob "The encoder cannot capture the screen - Go Live would fail" \
+         "$(grep -m1 'capture check:' <<<"$capture_out" | cut -c1-220)" "$(grep -m1 'ffmpeg:' <<<"$capture_out" | cut -c1-200)" \
+         "Update to the newest release (sudo bash $SRC/update.sh), or see docs/configuration.md 'Virtual screen size'."
+  fi
   for u in zoom browser-source ffmpeg-stream; do
     st="$(zs_user_systemctl is-active "$u" 2>/dev/null)"
     if [[ "$st" == "failed" ]]; then

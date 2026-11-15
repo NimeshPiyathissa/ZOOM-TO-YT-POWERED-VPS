@@ -13,7 +13,15 @@ All notable changes to this project are documented here. The format follows
   was available. Affects every install made with v1.0.0 - v1.0.2. The directory is enterable again (the installer's
   own `installer/` sub-directory stays private); `update.sh` repairs existing installs, and so does a restore.
 
+- **Go Live failed with "Error opening input files: Invalid argument"** when the output was larger than the virtual
+  screen (the default 1280x720 screen with a 1080p output preset): the encoder asked x11grab for 1920x1080 of a
+  1280x720 screen. The capture size now always comes from the real screen and the picture is scaled to the output;
+  the same applies to test recordings and to every framing mode measured on a screen of another size. With an output
+  smaller than the screen, the whole screen is now captured instead of only its top-left corner.
+
 ### Added
+- `scripts/capture-check.sh`: grabs one frame through the encoder's own capture settings without starting a stream.
+  `doctor.sh` and the install/update health check run it, so a capture that cannot work is reported before Go Live.
 - `app.cli selfcheck`: as the dashboard user, checks that the secret store unlocks automatically and that the stored
   VNC password really logs in to x11vnc. The installer's and updater's health check and `doctor.sh` now use it, so
   this kind of fault fails the install instead of passing unnoticed.

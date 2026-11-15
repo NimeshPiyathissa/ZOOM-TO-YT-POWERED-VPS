@@ -57,6 +57,7 @@ The **Logs** page in the dashboard shows the same, with secrets redacted.
 
 | Symptom | Cause and fix |
 |---|---|
+| Go Live fails: "Error opening input files: Invalid argument" | The encoder could not capture the screen (before v1.0.3: an output larger than the virtual screen). Update; `sudo bash /opt/zoom-stream/doctor.sh` runs a one-frame capture check and names the cause. |
 | Black picture on YouTube | Check Remote GUI. If Zoom is fine, check Output framing (Meeting only + measured region). |
 | Zoom toolbars visible | Turn on **Meeting only** on the Zoom page, then **Measure now** on the Output page. |
 | No sound | Live Studio's audio meter must move. In Zoom, the meeting audio must be joined ("Join audio by computer"); use Remote GUI to accept the audio dialog. |

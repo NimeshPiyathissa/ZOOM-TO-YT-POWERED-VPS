@@ -445,19 +445,26 @@ clean_filter_ok() {
 build_capture_framing() {
   local res="${1:-1920x1080}"
   CAPTURE_SIZE="$res"; CROP_FILTER=""; FRAMING_NOTE=""; COLOR_TAG_ARGS=()
+  # The REAL screen size, asked from the X server. x11grab refuses to start when asked for more than the screen has
+  # (ffmpeg: Capture area outside the screen size / Error opening input: Invalid argument), so the capture size never
+  # comes from RESOLUTION or a stored measurement alone. Empty = it could not be asked: configured sizes are used.
+  local actual=""
+  if command -v xdpyinfo >/dev/null 2>&1; then
+    actual="$(xdpyinfo -display "${DISPLAY:-:99}" 2>/dev/null | awk '/dimensions:/{print $2; exit}' || true)"
+  fi
+  [[ "$actual" =~ ^[0-9]+x[0-9]+$ ]] || actual=""
+  _bcf_whole() {   # capture the whole real screen and scale it to the output; $1 = the reason, for the log
+    CAPTURE_SIZE="$actual"
+    build_fullscreen_live_filter "${actual%x*}" "${actual#*x}" "${res%x*}" "${res#*x}" ""
+    CROP_FILTER="$FULLSCREEN_LIVE_FILTER"
+    FRAMING_NOTE="$1: ${CROP_FILTER:-no filter}"
+  }
   if [[ "${SOURCE_TYPE:-}" == "zoom" && "${ZOOM_CLEAN_BROADCAST:-0}" == "1" ]]; then
-    # Clean Broadcast: capture the whole desktop the dashboard measured and apply ITS filter (Zoom UI cut away, picture
-    # fitted with one uniform scale). The same string drives the Live Studio preview. A rejected filter falls back to
-    # fitting the whole desktop - never to a crop.
+    # Clean Broadcast: the desktop the dashboard measured + ITS filter (Zoom UI cut away, one uniform scale). The same
+    # string drives the Live Studio preview. A rejected filter falls back to fitting the whole desktop, never a crop.
     [[ "${ZOOM_CLEAN_CAPTURE:-}" =~ ^[0-9]+x[0-9]+$ ]] && CAPTURE_SIZE="$ZOOM_CLEAN_CAPTURE"
-    local actual=""
-    command -v xdpyinfo >/dev/null 2>&1 && actual="$(xdpyinfo -display "${DISPLAY:-:99}" 2>/dev/null | awk '/dimensions:/{print $2; exit}')"
-    if [[ "$actual" =~ ^[0-9]+x[0-9]+$ && "$actual" != "$CAPTURE_SIZE" ]]; then
-      # The screen changed size since the dashboard measured it: the stored crop no longer fits. Fit the whole screen.
-      CAPTURE_SIZE="$actual"
-      build_fullscreen_live_filter "${CAPTURE_SIZE%x*}" "${CAPTURE_SIZE#*x}" "${res%x*}" "${res#*x}" ""
-      CROP_FILTER="$FULLSCREEN_LIVE_FILTER"
-      FRAMING_NOTE="Clean Broadcast was measured on ${ZOOM_CLEAN_CAPTURE:-?}, the screen is now ${actual} - whole screen fitted instead (re-measure in the dashboard): ${CROP_FILTER:-no filter}"
+    if [[ -n "$actual" && "$actual" != "$CAPTURE_SIZE" ]]; then
+      _bcf_whole "Clean Broadcast was measured on ${ZOOM_CLEAN_CAPTURE:-?}, the screen is now ${actual} - whole screen fitted instead (re-measure in the dashboard)"
     elif clean_filter_ok "${ZOOM_CLEAN_FILTER:-}"; then
       CROP_FILTER="${ZOOM_CLEAN_FILTER:-}"
       FRAMING_NOTE="Clean Broadcast (capture ${CAPTURE_SIZE}): ${CROP_FILTER:-no filter, native ${CAPTURE_SIZE}}"
@@ -467,20 +474,30 @@ build_capture_framing() {
       FRAMING_NOTE="Clean Broadcast filter REJECTED (unexpected characters) - whole desktop fitted instead: ${CROP_FILTER:-no filter}"
     fi
   elif [[ "${SOURCE_TYPE:-}" == "zoom" && "${ZOOM_FULLSCREEN_LIVE:-0}" == "1" ]]; then
-    # Fullscreen Live replaces Meeting-only: capture the WHOLE desktop the dashboard measured (a capture smaller than
-    # the screen grabs only its top-left corner), then the smallest 16:9 box around all content, uniform scale, no trims.
+    # Fullscreen Live: the WHOLE desktop the dashboard measured, then the smallest 16:9 box around all content.
     [[ "${ZOOM_CAPTURE_SIZE:-}" =~ ^[0-9]+x[0-9]+$ ]] && CAPTURE_SIZE="$ZOOM_CAPTURE_SIZE"
-    build_fullscreen_live_filter "${CAPTURE_SIZE%x*}" "${CAPTURE_SIZE#*x}" "${res%x*}" "${res#*x}" "${ZOOM_FRAMING_BOX:-}"
-    CROP_FILTER="$FULLSCREEN_LIVE_FILTER"
-    FRAMING_NOTE="Fullscreen Live (box ${ZOOM_FRAMING_BOX:-whole screen}): ${CROP_FILTER:-no filter, native ${CAPTURE_SIZE}}"
-  elif [[ "${SOURCE_TYPE:-}" == "zoom" && "${ZOOM_MEETING_ONLY:-0}" == "1" ]]; then
-    # "Meeting only": cut Zoom's own top/bottom chrome and fit or fill what is left (build_meeting_only_filter).
+    if [[ -n "$actual" && "$actual" != "$CAPTURE_SIZE" ]]; then
+      _bcf_whole "Fullscreen Live was measured on ${CAPTURE_SIZE}, the screen is ${actual} - whole screen fitted instead (re-measure in the dashboard)"
+    else
+      build_fullscreen_live_filter "${CAPTURE_SIZE%x*}" "${CAPTURE_SIZE#*x}" "${res%x*}" "${res#*x}" "${ZOOM_FRAMING_BOX:-}"
+      CROP_FILTER="$FULLSCREEN_LIVE_FILTER"
+      FRAMING_NOTE="Fullscreen Live (box ${ZOOM_FRAMING_BOX:-whole screen}): ${CROP_FILTER:-no filter, native ${CAPTURE_SIZE}}"
+    fi
+  elif [[ "${SOURCE_TYPE:-}" == "zoom" && "${ZOOM_MEETING_ONLY:-0}" == "1" && ( -z "$actual" || "$actual" == "$res" ) ]]; then
+    # Meeting only: cut Zoom's top/bottom chrome, fit or fill the rest. Its trims assume a screen of the output size.
     build_meeting_only_filter "${res%x*}" "${res#*x}" "${ZOOM_MEETING_ONLY_FIT:-fit}" "${ZOOM_MEETING_ONLY_TRIM_TOP:-56}" "${ZOOM_MEETING_ONLY_TRIM_BOTTOM:-96}" "${ZOOM_MEETING_ONLY_REGION:-}"
     CROP_FILTER="$MEETING_ONLY_FILTER"
     FRAMING_NOTE="Meeting-only (${ZOOM_MEETING_ONLY_FIT:-fit}${ZOOM_MEETING_ONLY_REGION:+, measured area ${ZOOM_MEETING_ONLY_REGION}}): ${CROP_FILTER}"
+  elif [[ -n "$actual" && "$actual" != "$res" ]]; then
+    # No framing mode, and the screen differs from the output (e.g. the default 1280x720 screen + a 1080p preset).
+    _bcf_whole "The virtual screen is ${actual}, the output is ${res} - the whole screen is scaled to the output"
   fi
-  # The Clean Broadcast/Output filters end in one explicit BT.709 (limited range) conversion; tag the stream to match so
-  # YouTube shows the colours as captured. Other modes keep ffmpeg's default conversion and no tags, exactly as before.
+  # Last line of defence: never ask x11grab for more than the screen has.
+  if [[ -n "$actual" ]] && (( ${CAPTURE_SIZE%x*} > ${actual%x*} || ${CAPTURE_SIZE#*x} > ${actual#*x} )); then
+    _bcf_whole "The capture area ${CAPTURE_SIZE} was larger than the ${actual} screen - whole screen fitted instead"
+  fi
+  unset -f _bcf_whole
+  # Clean Broadcast/Output filters end in an explicit BT.709 (limited range) conversion: tag the stream to match.
   if [[ "$CROP_FILTER" == *"out_color_matrix=bt709"* ]]; then
     COLOR_TAG_ARGS=(-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv)
   fi
