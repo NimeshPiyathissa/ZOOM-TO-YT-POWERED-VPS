@@ -58,6 +58,7 @@ The **Logs** page in the dashboard shows the same, with secrets redacted.
 | Symptom | Cause and fix |
 |---|---|
 | Go Live fails: "Error opening input files: Invalid argument" | The encoder could not capture the screen (before v1.0.3: an output larger than the virtual screen). Update; `sudo bash /opt/zoom-stream/doctor.sh` runs a one-frame capture check and names the cause. |
+| Go Live fails: "Job for ffmpeg-stream.service failed because the control process exited with error code" (often with "sudo: unable to send audit message") | Before v1.0.4: the saved stream key was wrong - usually a Zoom meeting link pasted into the stream-key field - YouTube closed the connection, and after five tries systemd refused more starts. Paste the key from YouTube Studio (Go live > Stream key) in Live Studio and press Go Live again; "Restart All Services" is not needed. The sudo line is a harmless warning. From v1.0.4 a link is refused when you save it. |
 | Black picture on YouTube | Check Remote GUI. If Zoom is fine, check Output framing (Meeting only + measured region). |
 | Zoom toolbars visible | Turn on **Meeting only** on the Zoom page, then **Measure now** on the Output page. |
 | No sound | Live Studio's audio meter must move. In Zoom, the meeting audio must be joined ("Join audio by computer"); use Remote GUI to accept the audio dialog. |

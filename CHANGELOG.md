@@ -5,6 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-11-16
+
 ### Fixed
 - **A framing choice made while framing was off never reached the encoder.** In Live Studio (and Remote GUI), picking
   "Fill 16:9" or a background such as "Blurred picture" before pressing Clean Broadcast was only remembered: the panel
