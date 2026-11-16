@@ -25,6 +25,7 @@ from . import config, db, security, deps, control, env_store, profiles as profil
 from . import logs as logs_mod
 from . import preview, stats, scheduler, vnc_proxy
 from . import sources as sources_mod
+from . import stream_key as stream_key_mod
 from . import probe as probe_mod
 from . import url_security
 from .url_security import URLSecurityError
@@ -651,7 +652,8 @@ async def _checked_unit_action(unit: str, verb: str, grant=None) -> dict:
     Raises control.ControlError with a human reason; returns the action result otherwise."""
     result = await run_in_threadpool(functools.partial(control.unit_action, unit, verb, grant=grant))
     if not result.get("ok"):
-        raise control.ControlError(result.get("stderr") or f"systemctl {verb} {unit} failed")
+        raise control.ControlError(control.explain_systemctl_error(unit, verb, result.get("stderr") or "")
+                                   or f"systemctl {verb} {unit} failed")
     if verb in ("start", "restart"):
         seen_live = 0
         for _ in range(8):                      # ~5 s at most; never blocks longer than that
@@ -671,6 +673,8 @@ async def _checked_unit_action(unit: str, verb: str, grant=None) -> dict:
                         detail = (await run_in_threadpool(stats.last_ffmpeg_log_error)) or ""
                 if detail:                                                       # never echo a stream key
                     detail = (await run_in_threadpool(logs_mod.build_redactor))(detail)
+                    if unit == "ffmpeg-stream":
+                        detail = stats.explain_encoder_error(detail)
                 raise control.ControlError(
                     f"{unit} was started but stopped again right away"
                     + (f": {detail}" if detail else " without reporting an error - see the Logs page."))
@@ -709,13 +713,19 @@ async def _broadcast_view() -> dict:
         else:
             ready = True
     snap = broadcast.snapshot(show, ready)
+    key_problem = None
     try:
-        key_set = bool((await run_in_threadpool(env_store.read_parsed)).get("YT_STREAM_KEY"))
+        key = (await run_in_threadpool(env_store.read_parsed)).get("YT_STREAM_KEY") or ""
+        key_set = bool(key)
+        key_problem = stream_key_mod.problem(key)                  # e.g. a Zoom link saved before v1.0.4 validated keys
     except Exception:
         key_set = None
+    key_state = "invalid" if key_problem else ("configured" if key_set else ("missing" if key_set is False else "unknown"))
+    dest = {"platform": "YouTube Live (RTMPS)", "host": "a.rtmps.youtube.com", "stream_key": key_state}
+    if key_problem:
+        dest["stream_key_problem"] = key_problem                       # value-free text (app/stream_key.py)
     return {**snap, "source": ({"id": source["id"], "name": source["name"], "type": source["type"]} if source else None),
-            "destination": {"platform": "YouTube Live (RTMPS)", "host": "a.rtmps.youtube.com", "stream_key": (
-                "configured" if key_set else ("missing" if key_set is False else "unknown"))}}
+            "destination": dest}
 
 
 async def _broadcast_warnings(view: dict) -> list[dict]:
@@ -732,6 +742,9 @@ async def _broadcast_warnings(view: dict) -> list[dict]:
             warnings.append({"code": "not_in_meeting", "text": f"Zoom is not confirmed to be in a meeting ({st.get('detail') or st.get('status')}). Viewers would see the Zoom window as it is."})
     if view["destination"]["stream_key"] == "missing":
         warnings.append({"code": "no_stream_key", "text": "No YouTube stream key is configured - the encoder will not start."})
+    elif view["destination"]["stream_key"] == "invalid":
+        warnings.append({"code": "bad_stream_key", "text": "The saved stream key cannot work: "
+                         + view["destination"].get("stream_key_problem", "") + " Save it in Live Studio, then Go Live."})
     return warnings
 
 
@@ -765,8 +778,9 @@ async def api_broadcast_authorize(request: Request):
     async with _bl():
         view = await _broadcast_view()
         warnings = await _broadcast_warnings(view)
-        if any(w["code"] == "no_stream_key" for w in warnings):
-            return JSONResponse({"error": warnings[-1]["text"], "code": "no_stream_key", "warnings": warnings}, status_code=409)
+        blocking = next((w for w in warnings if w["code"] in ("no_stream_key", "bad_stream_key")), None)
+        if blocking:                                                   # cannot be acknowledged away: it can never work
+            return JSONResponse({"error": blocking["text"], "code": blocking["code"], "warnings": warnings}, status_code=409)
         if warnings and body.get("ack_warnings") is not True:
             return JSONResponse({"error": "Confirm the warnings before going live.", "code": "warnings_not_acknowledged",
                                  "warnings": warnings}, status_code=409)
@@ -794,6 +808,12 @@ async def _start_encoder_authorized(session, grant_id: str, purpose: str, ip: st
         grant = broadcast.consume_grant(grant_id, session["username"], purpose, source, rev)
         broadcast.begin_session(grant, source)
         try:
+            if purpose == "go_live":
+                # v1.0.4: after 5 failed starts in 5 min systemd refuses the next one ("start request repeated too
+                # quickly") and systemctl reports it as "control process exited with error code". An explicit,
+                # confirmed Go Live (refused above while LIVE/STARTING/STOPPING, so the unit is not running) clears
+                # the failed state and that counter first. Never done anywhere else (the watchdog must not).
+                await run_in_threadpool(control.unit_action, "ffmpeg-stream", "reset-failed")
             await run_in_threadpool(control.write_broadcast_auth, grant.env())
             result = await _checked_unit_action("ffmpeg-stream", "start" if purpose == "go_live" else "restart", grant=grant)
         except control.ControlError as exc:

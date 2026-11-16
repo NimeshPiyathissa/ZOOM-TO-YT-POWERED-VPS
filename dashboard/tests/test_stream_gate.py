@@ -27,6 +27,10 @@ def _posix(p):
 
 @pytest.fixture
 def sandbox(tmp_path):
+    return make_sandbox(tmp_path)
+
+
+def make_sandbox(tmp_path):
     app = tmp_path / "zs"
     (app / "scripts").mkdir(parents=True)
     for n in ("lib.sh", "stream.sh"):

@@ -224,6 +224,8 @@ def last_ffmpeg_log_error() -> str | None:
 # breaking the live stream key or starving the encoder), so treat them as
 # reasonable guesses, not verified signatures - if you see one fire
 # incorrectly, tighten the pattern.
+_OUTPUT_OPEN_RE = re.compile(r"Error opening output", re.I)
+
 _CAUSE_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"command not found", re.I), "Script aborted before ffmpeg started"),
     (re.compile(r"\.env[^\n]*(No such file|line \d+:)", re.I), "Script aborted before ffmpeg started"),
@@ -231,7 +233,22 @@ _CAUSE_PATTERNS: list[tuple[re.Pattern, str]] = [
      "Audio monitor missing"),
     (re.compile(r"forbidden|unauthorized|403|Server error|authentication.*fail", re.I),
      "YouTube rejected the stream key"),
+    # OBSERVED (v1.0.4 incident, test VPS 2026-11-16, key = a Zoom link): "[tls] IO error: End of file" then
+    # "Error opening output rtmps://.../live2/<redacted> Input/output error" / "Error opening output files: ...".
+    (_OUTPUT_OPEN_RE,
+     "YouTube closed the connection (check the stream key)"),
 ]
+
+
+def explain_encoder_error(line: str) -> str:
+    """ffmpeg's last error in words an operator can act on (the raw line is kept after it). Input-side failures keep
+    ffmpeg's own text - "Error opening input" points at the screen or audio, not at YouTube."""
+    if line and _OUTPUT_OPEN_RE.search(line):
+        return ("YouTube closed the connection when the encoder connected. This is almost always the stream key: "
+                "copy it again from YouTube Studio (Go live > Stream key) into Live Studio - it is not the Zoom link. "
+                "If the key is right, check that the channel can go live and that the server can reach YouTube. "
+                f"(ffmpeg: {line})")
+    return line
 
 _LOW_SPEED_CAUSE_THRESHOLD = 0.85
 

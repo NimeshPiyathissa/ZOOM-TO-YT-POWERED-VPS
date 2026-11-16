@@ -36,6 +36,14 @@ if [[ -z "${YT_STREAM_KEY:-}" ]]; then
   log "YT_STREAM_KEY is not set in .env - refusing to start"
   exit 1
 fi
+# v1.0.4: a Zoom link saved as the key reached YouTube as .../live2/https://...#success and YouTube just closed the
+# connection. The key is appended to the ingest URL, so a link, a path, a fragment or a space can never be a key. The
+# dashboard refuses to save such a value; this catches one written before that check. Never log the value itself.
+case "$YT_STREAM_KEY" in
+  *://*|*/*|*'#'*|*[[:space:]]*|www.*)
+    log "YT_STREAM_KEY in .env is a link, not a stream key - refusing to start. Paste the key from YouTube Studio (Go live > Stream key) in Live Studio."
+    exit 1 ;;
+esac
 
 # Ingest server (not secret). YT_RTMP_URL in .env overrides YouTube's default RTMPS ingest; the stream key is appended.
 DEFAULT_RTMP_BASE="rtmps://a.rtmps.youtube.com:443/live2"

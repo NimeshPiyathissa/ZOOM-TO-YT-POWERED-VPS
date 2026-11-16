@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from . import config
+from . import config, stream_key
 from .control import SUDO, run_as_zoombot, ControlError  # reuse the same sudo plumbing
 
 CAT = "/usr/bin/cat"
@@ -87,6 +87,10 @@ def validate_zoom_link(link: str) -> None:
 def validate_updates(updates: dict[str, str]) -> None:
     if "ZOOM_LINK" in updates and updates["ZOOM_LINK"]:
         validate_zoom_link(updates["ZOOM_LINK"])
+    if updates.get("YT_STREAM_KEY"):
+        key_problem = stream_key.problem(updates["YT_STREAM_KEY"])     # v1.0.4: a Zoom link was saved as the key
+        if key_problem:
+            raise ValidationError(key_problem)
     if "RESOLUTION" in updates:
         m = re.match(r"^(\d+)x(\d+)$", updates["RESOLUTION"])
         if not m:

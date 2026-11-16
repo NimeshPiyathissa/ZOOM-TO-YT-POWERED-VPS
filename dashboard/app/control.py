@@ -118,6 +118,29 @@ def _require_unit(unit: str) -> None:
         raise ControlError(f"unknown unit: {unit}")
 
 
+# sudo (run from dashboard.service, whose CapabilityBoundingSet has no CAP_AUDIT_WRITE) cannot write its audit record and
+# warns on stderr; the command itself still runs. Harmless, but it used to be shown above real systemctl errors.
+_SUDO_NOISE = re.compile(r"^sudo: unable to send audit message\b.*$", re.M)
+
+
+def strip_sudo_noise(stderr: str) -> str:
+    return "\n".join(l for l in _SUDO_NOISE.sub("", stderr).splitlines() if l.strip()).strip()
+
+
+def explain_systemctl_error(unit: str, verb: str, stderr: str) -> str:
+    """systemctl's text for a refused start, in the operator's words. After repeated quick failures systemd's start limit
+    refuses further starts and systemctl still blames "the control process" (Result stays exit-code). The encoder is
+    Type=simple with no ExecStartPre, so for it that text can only mean this refusal; for oneshot units it is real."""
+    stderr = strip_sudo_noise(stderr)
+    limited = "attempted too frequently" in stderr or "repeated too quickly" in stderr or (
+        unit == "ffmpeg-stream" and "control process exited" in stderr)
+    if verb in ("start", "restart") and limited:
+        what = "The encoder" if unit == "ffmpeg-stream" else unit
+        return (f"{what} was refused by systemd after several failed starts in the last 5 minutes. Fix the cause shown "
+                "on the Logs page (for the encoder this is most often the stream key), then try again.")
+    return stderr
+
+
 def unit_action(unit: str, verb: str, *, grant=None) -> dict:
     """The single place systemd verbs are issued. Starting or restarting the ENCODER needs `grant`: the opaque
     broadcast.Grant minted by an authenticated Go Live confirmation (app/broadcast.py). Anything else - a join, a source
@@ -142,7 +165,7 @@ def unit_action(unit: str, verb: str, *, grant=None) -> dict:
         "ok": proc.returncode == 0,
         "unit": unit,
         "verb": verb,
-        "stderr": proc.stderr.decode(errors="replace").strip(),
+        "stderr": strip_sudo_noise(proc.stderr.decode(errors="replace")),
     }
     if res["ok"] and unit == "ffmpeg-stream":
         try:

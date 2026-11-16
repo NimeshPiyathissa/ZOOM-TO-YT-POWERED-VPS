@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format follows
 - The audio self-test and the local recorder took their capture size from the output resolution and failed with
   "Error opening input files: Invalid argument" when the output was larger than the screen (the same fault v1.0.3
   fixed for the broadcast and test recordings). Both now use the real screen size.
+- **A link saved as the stream key made Go Live fail with "Job for ffmpeg-stream.service failed because the control
+  process exited with error code"** (often with "sudo: unable to send audit message" above it). A Zoom meeting link
+  copied from the browser was accepted as the YouTube stream key; YouTube closed the connection, and after a few tries
+  systemd refused further starts with that misleading message. Live Studio and Settings now refuse a link (or a value
+  with spaces, `/` or `#`) as a stream key and say why; Go Live is blocked with a clear message if such a key is
+  already saved; the encoder itself refuses it before connecting; a refused connection is reported as "YouTube closed
+  the connection ... check the stream key"; a confirmed Go Live clears systemd's start limit first; and sudo's harmless
+  audit warning is no longer shown with errors.
 
 ## [1.0.3] - 2026-11-15
 
